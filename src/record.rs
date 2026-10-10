@@ -25,7 +25,7 @@ mod streaming_trait {
         fn content_length(&self) -> u64;
     }
 
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Debug, Default, PartialEq)]
     /// An associated type indicating the body is buffered within the record.
     pub struct BufferedBody(pub Vec<u8>);
     impl BodyKind for BufferedBody {
@@ -60,7 +60,7 @@ mod streaming_trait {
         }
     }
 
-    #[derive(Clone, Copy, Debug)]
+    #[derive(Clone, Copy, Debug, Default)]
     /// An associated type indicated the record has a zero-length body.
     pub struct EmptyBody();
     impl BodyKind for EmptyBody {
@@ -155,7 +155,6 @@ impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
             record_type,
             truncated_type,
             body: EmptyBody(),
-            ..Default::default()
         })
     }
 }
@@ -212,7 +211,7 @@ impl Clone for RecordBuilder {
 /// * Date information not in the UTC timezone will be silently converted to UTC
 ///
 /// Use the `Display` trait to generate the formatted representation.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Record<T: BodyKind> {
     // NB: invariant: does not contain the headers stored in the struct
     headers: RawRecordHeader,
@@ -412,7 +411,7 @@ impl<T: BodyKind> Record<T> {
             WarcHeader::Truncated => {
                 let old_type = self.truncated_type.take();
                 self.truncated_type = Some(TruncatedType::from(&value));
-                Ok(old_type.map(|old| (Cow::Owned(old.to_string()))))
+                Ok(old_type.map(|old| Cow::Owned(old.to_string())))
             }
             WarcHeader::ContentLength => {
                 if Record::<T>::parse_content_length(&value)? != self.body.content_length() {
@@ -443,27 +442,65 @@ impl<T: BodyKind> Record<T> {
     pub fn content_length(&self) -> u64 {
         self.body.content_length()
     }
+
+    fn replace_body_kind<U: BodyKind>(self, body: U) -> Record<U> {
+        Record {
+            headers: self.headers,
+            record_date: self.record_date,
+            record_id: self.record_id,
+            record_type: self.record_type,
+            truncated_type: self.truncated_type,
+            body,
+        }
+    }
+
+    /// Returns the headers stored as dedicated fields, in their raw form.
+    fn stored_fields(&self) -> Vec<(WarcHeader, Vec<u8>)> {
+        let mut fields = vec![
+            (
+                WarcHeader::ContentLength,
+                self.content_length().to_string().into_bytes(),
+            ),
+            (
+                WarcHeader::WarcType,
+                self.record_type.to_string().into_bytes(),
+            ),
+            (WarcHeader::RecordID, self.record_id.clone().into_bytes()),
+            (
+                WarcHeader::Date,
+                self.record_date
+                    .to_rfc3339_opts(SecondsFormat::Secs, true)
+                    .into_bytes(),
+            ),
+        ];
+        if let Some(truncated_type) = &self.truncated_type {
+            fields.push((
+                WarcHeader::Truncated,
+                truncated_type.to_string().into_bytes(),
+            ));
+        }
+        fields
+    }
+}
+
+fn with_stored_fields(
+    mut headers: RawRecordHeader,
+    fields: Vec<(WarcHeader, Vec<u8>)>,
+) -> RawRecordHeader {
+    for (header, value) in fields {
+        let previous = headers.as_mut().insert(header, value);
+        debug_assert!(
+            previous.is_none(),
+            "invariant violation: raw struct contains externally stored fields"
+        );
+    }
+    headers
 }
 
 impl Record<EmptyBody> {
     /// Add a known body to this record, transforming it into a buffered body record.
     pub fn add_body<B: Into<Vec<u8>>>(self, body: B) -> Record<BufferedBody> {
-        let Self {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: _,
-        } = self;
-        Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: BufferedBody(body.into()),
-        }
+        self.replace_body_kind(BufferedBody(body.into()))
     }
 
     /// Add a streaming body to this record, whose expected size may not match the actual stream
@@ -473,45 +510,14 @@ impl Record<EmptyBody> {
         stream: &'r mut R,
         len: &'r mut u64,
     ) -> std::io::Result<Record<StreamingBody<'r, R>>> {
-        let Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            ..
-        } = self;
-
-        Ok(Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: StreamingBody::new(stream, len),
-        })
+        Ok(self.replace_body_kind(StreamingBody::new(stream, len)))
     }
 }
 
 impl Record<BufferedBody> {
     /// Strip the body from this record.
     pub fn strip_body(self) -> Record<EmptyBody> {
-        let Self {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: _,
-        } = self;
-        Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            body: EmptyBody(),
-        }
+        self.replace_body_kind(EmptyBody())
     }
 
     /// Return the body of this record.
@@ -534,48 +540,13 @@ impl Record<BufferedBody> {
 
     /// Transform this record into a raw record containing the same data.
     pub fn into_raw_parts(self) -> (RawRecordHeader, Vec<u8>) {
-        let Record {
-            mut headers,
-            record_date,
-            record_id,
-            record_type,
-            body,
-            ..
-        } = self;
-        let insert1 = headers.as_mut().insert(
-            WarcHeader::ContentLength,
-            format!("{}", body.0.len()).into(),
-        );
-        let insert2 = headers
-            .as_mut()
-            .insert(WarcHeader::WarcType, record_type.to_string().into());
-        let insert3 = headers
-            .as_mut()
-            .insert(WarcHeader::RecordID, record_id.into());
-        let insert4 = if let Some(ref truncated_type) = self.truncated_type {
-            headers
-                .as_mut()
-                .insert(WarcHeader::Truncated, truncated_type.to_string().into())
-        } else {
-            None
-        };
-        let insert5 = headers.as_mut().insert(
-            WarcHeader::Date,
-            record_date
-                .to_rfc3339_opts(SecondsFormat::Secs, true)
-                .into(),
-        );
+        let fields = self.stored_fields();
+        (with_stored_fields(self.headers, fields), self.body.0)
+    }
 
-        debug_assert!(
-            insert1.is_none()
-                && insert2.is_none()
-                && insert3.is_none()
-                && insert4.is_none()
-                && insert5.is_none(),
-            "invariant violation: raw struct contains externally stored fields"
-        );
-
-        (headers, body.0)
+    /// Return the raw header block of this record without consuming it.
+    pub(crate) fn to_raw_header(&self) -> RawRecordHeader {
+        with_stored_fields(self.headers.clone(), self.stored_fields())
     }
 }
 
@@ -586,33 +557,11 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
     ///
     /// This method can fail if the underlying stream returns an error. If this happens, the
     /// state of the stream is not guaranteed.
-    pub fn into_buffered(self) -> std::io::Result<Record<BufferedBody>> {
-        let Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            mut body,
-        } = self;
-
-        let buf = {
-            let mut body_vec =
-                Vec::with_capacity(std::cmp::min(body.len(), MAX_BODY_PREALLOCATION) as usize);
-            body.read_to_end(&mut body_vec)?;
-            body_vec
-        };
-
-        let empty_record = Record {
-            headers,
-            record_date,
-            record_id,
-            record_type,
-            truncated_type,
-            ..Default::default()
-        };
-
-        Ok(empty_record.add_body(buf))
+    pub fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
+        let mut body =
+            Vec::with_capacity(std::cmp::min(self.body.len(), MAX_BODY_PREALLOCATION) as usize);
+        self.body.read_to_end(&mut body)?;
+        Ok(self.replace_body_kind(BufferedBody(body)))
     }
 }
 
@@ -622,73 +571,30 @@ impl<'t, T: Read + 't> Read for Record<StreamingBody<'t, T>> {
     }
 }
 
-impl Default for Record<BufferedBody> {
-    fn default() -> Record<BufferedBody> {
+impl<T: BodyKind + Default> Default for Record<T> {
+    fn default() -> Record<T> {
         Record {
             headers: RawRecordHeader {
                 version: "1.0".to_string(),
                 headers: HashMap::new(),
             },
             record_date: Utc::now(),
-            record_id: Record::<BufferedBody>::generate_record_id(),
+            record_id: Self::generate_record_id(),
             record_type: RecordType::Resource,
             truncated_type: None,
-            body: BufferedBody(vec![]),
-        }
-    }
-}
-
-impl Default for Record<EmptyBody> {
-    fn default() -> Record<EmptyBody> {
-        Record {
-            headers: RawRecordHeader {
-                version: "1.0".to_string(),
-                headers: HashMap::new(),
-            },
-            record_date: Utc::now(),
-            record_id: Record::<EmptyBody>::generate_record_id(),
-            record_type: RecordType::Resource,
-            truncated_type: None,
-            body: EmptyBody(),
+            body: T::default(),
         }
     }
 }
 
 impl fmt::Display for Record<BufferedBody> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let (headers, body) = self.clone().into_raw_parts();
-        write!(f, "Record({}, {:?})", headers, body)
+        write!(f, "Record({}, {:?})", self.to_raw_header(), self.body())
     }
 }
 impl fmt::Display for Record<EmptyBody> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "Record({:?}, Empty)", self.headers)
-    }
-}
-
-impl Clone for Record<EmptyBody> {
-    fn clone(&self) -> Self {
-        Record {
-            headers: self.headers.clone(),
-            record_type: self.record_type.clone(),
-            record_date: self.record_date,
-            record_id: self.record_id.clone(),
-            truncated_type: self.truncated_type.clone(),
-            body: self.body,
-        }
-    }
-}
-
-impl Clone for Record<BufferedBody> {
-    fn clone(&self) -> Self {
-        Record {
-            headers: self.headers.clone(),
-            record_type: self.record_type.clone(),
-            record_date: self.record_date,
-            record_id: self.record_id.clone(),
-            truncated_type: self.truncated_type.clone(),
-            body: self.body.clone(),
-        }
     }
 }
 
@@ -737,29 +643,23 @@ impl RecordBuilder {
 
     /// Create or replace an arbitrary header of the record under construction.
     pub fn header<V: Into<Vec<u8>>>(mut self, key: WarcHeader, value: V) -> Self {
-        self.broken_headers.insert(key.clone(), value.into());
+        let value = value.into();
+        let result = match std::str::from_utf8(&value) {
+            Ok(string) => self.value.set_header(key.clone(), string).map(|_| ()),
+            Err(_) => Err(WarcError::MalformedHeader(
+                key.clone(),
+                "not a UTF-8 string".to_string(),
+            )),
+        };
 
-        let is_ok;
-        match std::str::from_utf8(self.broken_headers.get(&key).unwrap()) {
-            Ok(string) => {
-                if let Err(e) = self.value.set_header(key.clone(), string) {
-                    self.last_error = Some(e);
-                    is_ok = false;
-                } else {
-                    is_ok = true;
-                }
+        match result {
+            Ok(()) => {
+                self.broken_headers.remove(&key);
             }
-            Err(_) => {
-                is_ok = false;
-                self.last_error = Some(WarcError::MalformedHeader(
-                    key.clone(),
-                    "not a UTF-8 string".to_string(),
-                ));
+            Err(e) => {
+                self.broken_headers.insert(key, value);
+                self.last_error = Some(e);
             }
-        }
-
-        if is_ok {
-            self.broken_headers.remove(&key);
         }
 
         self

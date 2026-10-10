@@ -82,7 +82,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
             Ok(token) => token,
         };
 
-        if content_length.is_none() && token_str.to_lowercase() == "content-length" {
+        if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
             let value_str = match str::from_utf8(header.1) {
                 Err(_) => {
                     return Err(nom::Err::Error(nom::error::Error::new(
@@ -111,11 +111,7 @@ pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)
 
     // TODO: Technically if we didn't find a `content-length` header, the record is invalid. Should
     // we be returning an error here instead?
-    if content_length.is_none() {
-        content_length = Some(0);
-    }
-
-    Ok((input, (version, warc_headers, content_length.unwrap())))
+    Ok((input, (version, warc_headers, content_length.unwrap_or(0))))
 }
 
 /// Parse an entire WARC record.

@@ -1,7 +1,7 @@
 use crate::parser;
-use crate::{BufferedBody, Error, RawRecordHeader, Record, StreamingBody};
+use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
-use std::convert::TryInto;
+use std::convert::TryFrom;
 use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read};
@@ -45,6 +45,69 @@ fn read_header_block<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> Result
         if bytes_read == 2 && buffer.ends_with(b"\r\n") {
             return Ok(true);
         }
+    }
+}
+
+/// Reads and parses the next header block, returning it with the declared body length.
+///
+/// Returns `None` when the input ends cleanly before another record.
+fn read_record_header<R: BufRead>(reader: &mut R) -> Option<Result<(RawRecordHeader, u64), Error>> {
+    let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
+    match read_header_block(reader, &mut header_buffer) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(e) => return Some(Err(e)),
+    }
+
+    let (version, headers, body_len) = match parser::headers(&header_buffer) {
+        Ok((_, parsed)) => parsed,
+        Err(e) => {
+            return Some(Err(Error::ParseHeaders(
+                e.map(|inner| (inner.input.to_owned(), inner.code)),
+            )))
+        }
+    };
+    let headers = RawRecordHeader {
+        version: version.to_owned(),
+        headers: headers
+            .into_iter()
+            .map(|(token, value)| (token.into(), value.to_owned()))
+            .collect(),
+    };
+    Some(Ok((headers, body_len as u64)))
+}
+
+/// Reads a body of `len` bytes followed by the record terminator.
+fn read_body<R: BufRead>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
+    let mut body = Vec::with_capacity(std::cmp::min(len, MB as u64) as usize);
+    reader
+        .by_ref()
+        .take(len)
+        .read_to_end(&mut body)
+        .map_err(Error::ReadData)?;
+    if (body.len() as u64) < len {
+        return Err(Error::UnexpectedEOB);
+    }
+    read_terminator(reader)?;
+    Ok(body)
+}
+
+/// Reads the `\r\n\r\n` that ends every record.
+fn read_terminator<R: Read>(reader: &mut R) -> Result<(), Error> {
+    let mut crlfs = [0; 4];
+    match reader.read_exact(&mut crlfs) {
+        Ok(()) => (),
+        Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(Error::UnexpectedEOB),
+        Err(io) => return Err(Error::ReadData(io)),
+    }
+
+    if &crlfs == b"\r\n\r\n" {
+        Ok(())
+    } else {
+        Err(Error::ParseHeaders(nom::Err::Failure((
+            b"\r\n\r\n".to_vec(),
+            nom::error::ErrorKind::Tag,
+        ))))
     }
 }
 
@@ -122,81 +185,24 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
     type Item = Result<(RawRecordHeader, Vec<u8>), Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        match read_header_block(&mut self.reader, &mut header_buffer) {
-            Ok(true) => {}
-            Ok(false) => return None,
+        let (headers, body_len) = match read_record_header(&mut self.reader)? {
+            Ok(header) => header,
             Err(e) => return Some(Err(e)),
-        }
-
-        let headers_parsed = match parser::headers(&header_buffer) {
-            Err(e) => {
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )))
-            }
-            Ok(parsed) => parsed.1,
         };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        let expected_body_len = headers_parsed.2;
-
-        let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
-        let mut found_body = false;
-        let mut body_bytes_read = 0;
-        // we expect 4 characters (\r\n\r\n) after the body
-        let maximum_read_range = match expected_body_len.checked_add(4) {
-            Some(range) => range,
-            None => return Some(Err(Error::ReadOverflow)),
-        };
-        while !found_body {
-            if body_bytes_read == maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
-            }
-            let bytes_left = (maximum_read_range - body_bytes_read) as u64;
-            let bytes_read = match self
-                .reader
-                .by_ref()
-                .take(bytes_left)
-                .read_until(b'\n', &mut body_buffer)
-            {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            body_bytes_read += bytes_read;
-
-            if bytes_read == 2 && body_bytes_read == maximum_read_range {
-                found_body = true;
-            }
-
-            if bytes_read == 0 {
-                return Some(Err(Error::UnexpectedEOB));
-            }
-        }
-
-        let body_ref = &body_buffer[..expected_body_len];
-
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
-        };
-        let body = body_ref.to_owned();
-        Some(Ok((headers, body)))
+        Some(read_body(&mut self.reader, body_len).map(|body| (headers, body)))
     }
 }
 
 /// An iterator which returns the records read by a reader.
 pub struct RecordIter<R> {
-    reader: R,
+    raw: RawRecordIter<R>,
 }
 
 impl<R: BufRead> RecordIter<R> {
     pub(crate) fn new(reader: R) -> RecordIter<R> {
-        RecordIter { reader }
+        RecordIter {
+            raw: RawRecordIter::new(reader),
+        }
     }
 }
 
@@ -204,77 +210,10 @@ impl<R: BufRead> Iterator for RecordIter<R> {
     type Item = Result<Record<BufferedBody>, Error>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        match read_header_block(&mut self.reader, &mut header_buffer) {
-            Ok(true) => {}
-            Ok(false) => return None,
-            Err(e) => return Some(Err(e)),
-        }
-
-        let headers_parsed = match parser::headers(&header_buffer) {
-            Err(e) => {
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )));
-            }
-
-            Ok(parsed) => parsed.1,
-        };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        let expected_body_len = headers_parsed.2;
-
-        let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
-        let mut found_body = false;
-        let mut body_bytes_read = 0;
-        // we expect 4 characters (\r\n\r\n) after the body
-        let maximum_read_range = match expected_body_len.checked_add(4) {
-            Some(range) => range,
-            None => return Some(Err(Error::ReadOverflow)),
-        };
-        while !found_body {
-            if body_bytes_read == maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
-            }
-            let bytes_left = (maximum_read_range - body_bytes_read) as u64;
-            let bytes_read = match self
-                .reader
-                .by_ref()
-                .take(bytes_left)
-                .read_until(b'\n', &mut body_buffer)
-            {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            body_bytes_read += bytes_read;
-
-            if bytes_read == 2 && body_bytes_read == maximum_read_range {
-                found_body = true;
-            }
-
-            if bytes_read == 0 {
-                return Some(Err(Error::UnexpectedEOB));
-            }
-        }
-
-        let body_ref = &body_buffer[..expected_body_len];
-
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
-        };
-        let body = body_ref.to_owned();
-        match headers.try_into() {
-            Ok(b) => {
-                let buffered: Record<_> = b;
-                Some(Ok(buffered.add_body(body)))
-            }
-            Err(e) => Some(Err(e)),
-        }
+        let record = self.raw.next()?.and_then(|(headers, body)| {
+            Record::<EmptyBody>::try_from(headers).map(|record| record.add_body(body))
+        });
+        Some(record)
     }
 }
 
@@ -312,24 +251,7 @@ impl<R: BufRead> StreamingIter<'_, R> {
                 return Err(Error::UnexpectedEOB);
             }
         }
-
-        let mut crlfs = [0; 4];
-
-        match self.reader.read_exact(&mut crlfs) {
-            Ok(()) => (),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(Error::UnexpectedEOB)
-            }
-            Err(io) => return Err(Error::ReadData(io)),
-        }
-
-        if &crlfs == b"\x0d\x0a\x0d\x0a" {
-            Ok(())
-        } else {
-            let synthetic_err: nom::Err<(Vec<u8>, nom::error::ErrorKind)> =
-                nom::Err::Failure((vec![0x0d, 0x0a, 0x0d, 0x0a], nom::error::ErrorKind::Tag));
-            Err(Error::ParseHeaders(synthetic_err))
-        }
+        read_terminator(self.reader)
     }
 
     /// Advance the stream to the next item.
@@ -345,42 +267,21 @@ impl<R: BufRead> StreamingIter<'_, R> {
             return Some(Err(e));
         }
 
-        let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        match read_header_block(&mut self.reader, &mut header_buffer) {
-            Ok(true) => {}
-            Ok(false) => return None,
+        let (headers, body_len) = match read_record_header(self.reader)? {
+            Ok(header) => header,
             Err(e) => return Some(Err(e)),
-        }
-
-        let headers_parsed = match parser::headers(&header_buffer) {
-            Err(e) => {
-                return Some(Err(Error::ParseHeaders(
-                    e.map(|inner| (inner.input.to_owned(), inner.code)),
-                )))
-            }
-            Ok(parsed) => parsed.1,
         };
-        let version_ref = headers_parsed.0;
-        let headers_ref = headers_parsed.1;
-        self.current_item_size = headers_parsed.2 as u64;
+        self.current_item_size = body_len;
 
-        let headers = RawRecordHeader {
-            version: version_ref.to_owned(),
-            headers: headers_ref
-                .into_iter()
-                .map(|(token, value)| (token.into(), value.to_owned()))
-                .collect(),
+        let record = match Record::<EmptyBody>::try_from(headers) {
+            Ok(record) => record,
+            Err(e) => return Some(Err(e)),
         };
-        match headers.try_into() {
-            Ok(b) => {
-                let record: Record<_> = b;
-                let fixed_stream_result = record
-                    .add_fixed_stream(self.reader, &mut self.current_item_size)
-                    .map_err(Error::ReadData);
-                Some(fixed_stream_result)
-            }
-            Err(e) => Some(Err(e)),
-        }
+        Some(
+            record
+                .add_fixed_stream(self.reader, &mut self.current_item_size)
+                .map_err(Error::ReadData),
+        )
     }
 }
 
