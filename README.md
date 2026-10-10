@@ -25,6 +25,27 @@ forks are not picked up automatically.
 warc = { git = "https://github.com/dentiny/warc-rs" }
 ```
 
+`WarcReader::new` and `WarcWriter::new` accept any `BufRead` or `Write`.
+`from_path` and `from_path_gzip` open files through an
+[OpenDAL](https://opendal.apache.org) `Operator` (re-exported as
+`warc::opendal`) with its default timeout and retry layers. The memory, local
+filesystem, and S3 services are enabled.
+
+```rust
+use warc::opendal::{services::Fs, Operator};
+use warc::WarcReader;
+
+let runtime = tokio::runtime::Runtime::new()?;
+let _guard = runtime.enter();
+let operator = Operator::new(Fs::default().root("/data"))?;
+let reader = WarcReader::from_path_gzip(&operator, "crawl.warc.gz")?;
+```
+
+These constructors use OpenDAL's blocking API. Call them on a thread that has
+entered a Tokio runtime but is not running async code, such as inside
+`tokio::task::spawn_blocking` or after `Runtime::enter`. Writers must be
+finished with `close()`; dropping one without closing may lose the file.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The original copyright of the upstream project is

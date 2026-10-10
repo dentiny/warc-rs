@@ -1,8 +1,13 @@
+use warc::opendal::services::Fs;
+use warc::opendal::Operator;
 use warc::WarcHeader;
 use warc::WarcReader;
 
 fn main() -> Result<(), std::io::Error> {
-    let file = WarcReader::from_path_gzip("warc_example.warc.gz")?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let _guard = runtime.enter();
+    let operator = Operator::new(Fs::default().root("."))?;
+    let file = WarcReader::from_path_gzip(&operator, "warc_example.warc.gz")?;
 
     let mut count = 0;
     for record in file.iter_records() {

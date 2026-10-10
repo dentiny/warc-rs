@@ -1,9 +1,11 @@
+use crate::storage::blocking_operator;
 use crate::{BufferedBody, RawRecordHeader, Record};
 
-use std::fs;
+use opendal::blocking::StdWriter;
+use opendal::Operator;
+
 use std::io;
 use std::io::{BufWriter, Write};
-use std::path::Path;
 
 #[cfg(feature = "gzip")]
 use libflate::gzip::Encoder as GzipWriter;
@@ -36,21 +38,26 @@ impl<W: Write> WarcWriter<W> {
         B: AsRef<[u8]>,
     {
         let mut bytes_written = 0;
+        let mut write = |bytes: &[u8]| -> io::Result<()> {
+            self.writer.write_all(bytes)?;
+            bytes_written += bytes.len();
+            Ok(())
+        };
 
-        bytes_written += self.writer.write(b"WARC/")?;
-        bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(b"\r\n")?;
+        write(b"WARC/")?;
+        write(headers.version.as_bytes())?;
+        write(b"\r\n")?;
 
         for (token, value) in headers.as_ref().iter() {
-            bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(b": ")?;
-            bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(b"\r\n")?;
+            write(token.to_string().as_bytes())?;
+            write(b": ")?;
+            write(value)?;
+            write(b"\r\n")?;
         }
-        bytes_written += self.writer.write(b"\r\n")?;
+        write(b"\r\n")?;
 
-        bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(b"\r\n\r\n")?;
+        write(body.as_ref())?;
+        write(b"\r\n\r\n")?;
 
         Ok(bytes_written)
     }
@@ -74,34 +81,85 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
     }
 }
 
-impl WarcWriter<BufWriter<fs::File>> {
-    /// Create a new writer which writes to a file.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        let writer = BufWriter::with_capacity(MB, file);
+fn open_std_writer(operator: &Operator, path: &str) -> io::Result<StdWriter> {
+    Ok(blocking_operator(operator)?.writer(path)?.into_std_write())
+}
 
-        Ok(WarcWriter::new(writer))
+impl WarcWriter<BufWriter<StdWriter>> {
+    /// Create a new writer which writes `path` through `operator`, replacing any existing file.
+    ///
+    /// Writes go through OpenDAL's default timeout and retry layers. The calling thread must have
+    /// entered a Tokio runtime without running async code on it, such as inside
+    /// `tokio::task::spawn_blocking` or after `Runtime::enter`.
+    ///
+    /// Records are only guaranteed to be stored once `close` returns `Ok`.
+    pub fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
+        let writer = open_std_writer(operator, path)?;
+        Ok(WarcWriter::new(BufWriter::with_capacity(MB, writer)))
+    }
+
+    /// Flush buffered records and commit the file.
+    pub fn close(self) -> io::Result<()> {
+        let mut writer = self.writer.into_inner().map_err(|e| e.into_error())?;
+        writer.close()
     }
 }
 
 #[cfg(feature = "gzip")]
-impl WarcWriter<BufWriter<GzipWriter<std::fs::File>>> {
-    /// Create a new writer which writes to a GZIP-compressed file.
-    pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
-        let gzip_stream = GzipWriter::new(file)?;
-        let writer = BufWriter::with_capacity(MB, gzip_stream);
+impl WarcWriter<BufWriter<GzipWriter<StdWriter>>> {
+    /// Create a new writer which writes a GZIP-compressed `path` through `operator`, replacing
+    /// any existing file.
+    ///
+    /// See [`WarcWriter::from_path`] for the runtime requirements. Records are only guaranteed to
+    /// be stored once `close` returns `Ok`.
+    pub fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
+        let gzip_stream = GzipWriter::new(open_std_writer(operator, path)?)?;
+        Ok(WarcWriter::new(BufWriter::with_capacity(MB, gzip_stream)))
+    }
 
-        Ok(WarcWriter::new(writer))
+    /// Flush buffered records, write the GZIP trailer, and commit the file.
+    pub fn close(self) -> io::Result<()> {
+        let gzip_stream = self.writer.into_inner().map_err(|e| e.into_error())?;
+        let mut writer = gzip_stream.finish().into_result()?;
+        writer.close()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BufferedBody, EmptyBody, Record, WarcReader, WarcWriter};
+
+    use opendal::services::Memory;
+    use opendal::Operator;
+
+    use std::io::BufRead;
+
+    fn assert_reads_back<R: BufRead>(reader: WarcReader<R>, expected: &Record<BufferedBody>) {
+        let records: Vec<_> = reader.iter_records().collect::<Result<_, _>>().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].warc_id(), expected.warc_id());
+        assert_eq!(records[0].body(), expected.body());
+    }
+
+    #[test]
+    fn round_trips_through_operator() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let operator = Operator::new(Memory::default()).unwrap();
+        let record = Record::<EmptyBody>::default().add_body(b"hello".to_vec());
+
+        let mut writer = WarcWriter::from_path(&operator, "a.warc").unwrap();
+        writer.write(&record).unwrap();
+        writer.close().unwrap();
+        assert_reads_back(WarcReader::from_path(&operator, "a.warc").unwrap(), &record);
+
+        #[cfg(feature = "gzip")]
+        {
+            let mut writer = WarcWriter::from_path_gzip(&operator, "a.warc.gz").unwrap();
+            writer.write(&record).unwrap();
+            writer.close().unwrap();
+            let reader = WarcReader::from_path_gzip(&operator, "a.warc.gz").unwrap();
+            assert_reads_back(reader, &record);
+        }
     }
 }
