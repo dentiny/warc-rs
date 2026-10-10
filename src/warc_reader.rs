@@ -4,7 +4,7 @@ use crate::{BufferedBody, Error, RawRecordHeader, Record, StreamingBody};
 use std::convert::TryInto;
 use std::fs;
 use std::io;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 #[cfg(feature = "gzip")]
@@ -12,6 +12,41 @@ use libflate::gzip::MultiDecoder as GzipReader;
 
 const KB: usize = 1_024;
 const MB: usize = 1_048_576;
+/// Upper bound for one record's header block, so corrupt input cannot grow it without limit.
+const MAX_HEADER_BLOCK_BYTES: u64 = 4 * MB as u64;
+
+/// Reads one header block, up to and including the empty line that ends it, into `buffer`.
+///
+/// Returns `Ok(false)` when the input ends cleanly before another record. Input that ends after
+/// non-whitespace header bytes is reported as an error rather than silently dropped.
+fn read_header_block<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<bool, Error> {
+    loop {
+        let remaining = MAX_HEADER_BLOCK_BYTES - buffer.len() as u64;
+        if remaining == 0 {
+            return Err(Error::ReadData(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("WARC header block exceeds {} bytes", MAX_HEADER_BLOCK_BYTES),
+            )));
+        }
+        let bytes_read = reader
+            .by_ref()
+            .take(remaining)
+            .read_until(b'\n', buffer)
+            .map_err(Error::ReadData)?;
+        if bytes_read == 0 {
+            if buffer.iter().all(u8::is_ascii_whitespace) {
+                return Ok(false);
+            }
+            return Err(Error::ReadData(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "input ended inside a WARC header block",
+            )));
+        }
+        if bytes_read == 2 && buffer.ends_with(b"\r\n") {
+            return Ok(true);
+        }
+    }
+}
 
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
@@ -92,23 +127,10 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
-                return None;
-            }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
-            }
+        match read_header_block(&mut self.reader, &mut header_buffer) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => return Some(Err(e)),
         }
 
         let headers_parsed = match parser::headers(&header_buffer) {
@@ -126,26 +148,34 @@ impl<R: BufRead> Iterator for RawRecordIter<R> {
         let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
         let mut found_body = false;
         let mut body_bytes_read = 0;
-        let maximum_read_range = expected_body_len + 4;
+        // we expect 4 characters (\r\n\r\n) after the body
+        let maximum_read_range = match expected_body_len.checked_add(4) {
+            Some(range) => range,
+            None => return Some(Err(Error::ReadOverflow)),
+        };
         while !found_body {
-            let bytes_read = match self.reader.read_until(b'\n', &mut body_buffer) {
+            if body_bytes_read == maximum_read_range {
+                return Some(Err(Error::ReadOverflow));
+            }
+            let bytes_left = (maximum_read_range - body_bytes_read) as u64;
+            let bytes_read = match self
+                .reader
+                .by_ref()
+                .take(bytes_left)
+                .read_until(b'\n', &mut body_buffer)
+            {
                 Err(io) => return Some(Err(Error::ReadData(io))),
                 Ok(len) => len,
             };
 
             body_bytes_read += bytes_read;
 
-            // we expect 4 characters (\r\n\r\n) after the body
             if bytes_read == 2 && body_bytes_read == maximum_read_range {
                 found_body = true;
             }
 
             if bytes_read == 0 {
                 return Some(Err(Error::UnexpectedEOB));
-            }
-
-            if body_bytes_read > maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
             }
         }
 
@@ -179,23 +209,10 @@ impl<R: BufRead> Iterator for RecordIter<R> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
-                return None;
-            }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
-            }
+        match read_header_block(&mut self.reader, &mut header_buffer) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => return Some(Err(e)),
         }
 
         let headers_parsed = match parser::headers(&header_buffer) {
@@ -214,26 +231,34 @@ impl<R: BufRead> Iterator for RecordIter<R> {
         let mut body_buffer: Vec<u8> = Vec::with_capacity(MB);
         let mut found_body = false;
         let mut body_bytes_read = 0;
-        let maximum_read_range = expected_body_len + 4;
+        // we expect 4 characters (\r\n\r\n) after the body
+        let maximum_read_range = match expected_body_len.checked_add(4) {
+            Some(range) => range,
+            None => return Some(Err(Error::ReadOverflow)),
+        };
         while !found_body {
-            let bytes_read = match self.reader.read_until(b'\n', &mut body_buffer) {
+            if body_bytes_read == maximum_read_range {
+                return Some(Err(Error::ReadOverflow));
+            }
+            let bytes_left = (maximum_read_range - body_bytes_read) as u64;
+            let bytes_read = match self
+                .reader
+                .by_ref()
+                .take(bytes_left)
+                .read_until(b'\n', &mut body_buffer)
+            {
                 Err(io) => return Some(Err(Error::ReadData(io))),
                 Ok(len) => len,
             };
 
             body_bytes_read += bytes_read;
 
-            // we expect 4 characters (\r\n\r\n) after the body
             if bytes_read == 2 && body_bytes_read == maximum_read_range {
                 found_body = true;
             }
 
             if bytes_read == 0 {
                 return Some(Err(Error::UnexpectedEOB));
-            }
-
-            if body_bytes_read > maximum_read_range {
-                return Some(Err(Error::ReadOverflow));
             }
         }
 
@@ -280,19 +305,16 @@ impl<R: BufRead> StreamingIter<'_, R> {
     }
 
     fn skip_body(&mut self) -> Result<(), Error> {
-        let mut read_buffer = [0u8; MB];
-        let maximum_read_range = self.current_item_size;
-        let mut body_bytes_left = maximum_read_range;
-        while body_bytes_left > 0 {
-            let read_size = std::cmp::min(body_bytes_left, read_buffer.len() as u64) as usize;
-            let bytes_read = match self.reader.read(&mut read_buffer[..read_size]) {
-                Err(io) => return Err(Error::ReadData(io)),
-                Ok(len) => len as u64,
-            };
-            if bytes_read == 0 {
+        let body_bytes_left = self.current_item_size;
+        if body_bytes_left > 0 {
+            let skipped = io::copy(
+                &mut self.reader.by_ref().take(body_bytes_left),
+                &mut io::sink(),
+            )
+            .map_err(Error::ReadData)?;
+            if skipped < body_bytes_left {
                 return Err(Error::UnexpectedEOB);
             }
-            body_bytes_left -= bytes_read;
         }
 
         let mut crlfs = [0; 4];
@@ -328,23 +350,10 @@ impl<R: BufRead> StreamingIter<'_, R> {
         }
 
         let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-        let mut found_headers = false;
-        while !found_headers {
-            let bytes_read = match self.reader.read_until(b'\n', &mut header_buffer) {
-                Err(io) => return Some(Err(Error::ReadData(io))),
-                Ok(len) => len,
-            };
-
-            if bytes_read == 0 {
-                return None;
-            }
-
-            if bytes_read == 2 {
-                let last_two_chars = header_buffer.len() - 2;
-                if &header_buffer[last_two_chars..] == b"\r\n" {
-                    found_headers = true;
-                }
-            }
+        match read_header_block(&mut self.reader, &mut header_buffer) {
+            Ok(true) => {}
+            Ok(false) => return None,
+            Err(e) => return Some(Err(e)),
         }
 
         let headers_parsed = match parser::headers(&header_buffer) {
