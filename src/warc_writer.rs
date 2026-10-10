@@ -1,4 +1,4 @@
-use crate::storage::blocking_operator;
+use crate::storage;
 use crate::{BufferedBody, RawRecordHeader, Record};
 
 use opendal::blocking::StdWriter;
@@ -81,10 +81,6 @@ impl<W: Write> WarcWriter<BufWriter<W>> {
     }
 }
 
-fn open_std_writer(operator: &Operator, path: &str) -> io::Result<StdWriter> {
-    Ok(blocking_operator(operator)?.writer(path)?.into_std_write())
-}
-
 impl WarcWriter<BufWriter<StdWriter>> {
     /// Create a new writer which writes `path` through `operator`, replacing any existing file.
     ///
@@ -94,7 +90,7 @@ impl WarcWriter<BufWriter<StdWriter>> {
     ///
     /// Records are only guaranteed to be stored once `close` returns `Ok`.
     pub fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
-        let writer = open_std_writer(operator, path)?;
+        let writer = storage::writer(operator, path)?;
         Ok(WarcWriter::new(BufWriter::with_capacity(MB, writer)))
     }
 
@@ -113,7 +109,7 @@ impl WarcWriter<BufWriter<GzipWriter<StdWriter>>> {
     /// See [`WarcWriter::from_path`] for the runtime requirements. Records are only guaranteed to
     /// be stored once `close` returns `Ok`.
     pub fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
-        let gzip_stream = GzipWriter::new(open_std_writer(operator, path)?)?;
+        let gzip_stream = GzipWriter::new(storage::writer(operator, path)?)?;
         Ok(WarcWriter::new(BufWriter::with_capacity(MB, gzip_stream)))
     }
 

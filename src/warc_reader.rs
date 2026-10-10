@@ -1,5 +1,4 @@
-use crate::parser;
-use crate::storage::blocking_operator;
+use crate::{parser, storage};
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
 use opendal::blocking::StdReader;
@@ -7,10 +6,7 @@ use opendal::Operator;
 
 use std::convert::TryFrom;
 use std::io;
-use std::io::{BufRead, Read};
-
-#[cfg(feature = "gzip")]
-use std::io::BufReader;
+use std::io::{BufRead, BufReader, Read};
 
 #[cfg(feature = "gzip")]
 use libflate::gzip::MultiDecoder as GzipReader;
@@ -152,31 +148,25 @@ impl<R: BufRead> WarcReader<R> {
     }
 }
 
-fn open_std_reader(operator: &Operator, path: &str) -> io::Result<StdReader> {
-    Ok(blocking_operator(operator)?
-        .reader(path)?
-        .into_std_read(..)?)
-}
-
-impl WarcReader<StdReader> {
+impl WarcReader<BufReader<StdReader>> {
     /// Create a new reader which reads `path` from `operator`.
     ///
     /// Reads go through OpenDAL's default timeout and retry layers. The calling thread must have
     /// entered a Tokio runtime without running async code on it, such as inside
     /// `tokio::task::spawn_blocking` or after `Runtime::enter`.
     pub fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
-        Ok(WarcReader::new(open_std_reader(operator, path)?))
+        Ok(WarcReader::new(storage::reader(operator, path)?))
     }
 }
 
 #[cfg(feature = "gzip")]
-impl WarcReader<BufReader<GzipReader<StdReader>>> {
+impl WarcReader<BufReader<GzipReader<BufReader<StdReader>>>> {
     /// Create a new reader which reads a compressed `path` from `operator`.
     ///
     /// Only GZIP compression is currently supported. See [`WarcReader::from_path`] for the
     /// runtime requirements.
     pub fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
-        let gzip_stream = GzipReader::new(open_std_reader(operator, path)?)?;
+        let gzip_stream = GzipReader::new(storage::reader(operator, path)?)?;
         Ok(WarcReader::new(BufReader::new(gzip_stream)))
     }
 }
