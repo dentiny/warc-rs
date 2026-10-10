@@ -1,15 +1,14 @@
 use crate::{parser, storage};
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
-use opendal::blocking::StdReader;
-use opendal::Operator;
+use futures_util::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt};
+use opendal::{FuturesAsyncReader, Operator};
 
 use std::convert::TryFrom;
 use std::io;
-use std::io::{BufRead, BufReader, Read};
 
 #[cfg(feature = "gzip")]
-use libflate::gzip::MultiDecoder as GzipReader;
+use crate::GzipReader;
 
 const KB: usize = 1_024;
 const MB: usize = 1_048_576;
@@ -20,7 +19,10 @@ const MAX_HEADER_BLOCK_BYTES: u64 = 4 * MB as u64;
 ///
 /// Returns `Ok(false)` when the input ends cleanly before another record. Input that ends after
 /// non-whitespace header bytes is reported as an error rather than silently dropped.
-fn read_header_block<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> Result<bool, Error> {
+async fn read_header_block<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    buffer: &mut Vec<u8>,
+) -> Result<bool, Error> {
     loop {
         let remaining = MAX_HEADER_BLOCK_BYTES - buffer.len() as u64;
         if remaining == 0 {
@@ -29,10 +31,10 @@ fn read_header_block<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> Result
                 format!("WARC header block exceeds {} bytes", MAX_HEADER_BLOCK_BYTES),
             )));
         }
-        let bytes_read = reader
-            .by_ref()
+        let bytes_read = (&mut *reader)
             .take(remaining)
             .read_until(b'\n', buffer)
+            .await
             .map_err(Error::ReadData)?;
         if bytes_read == 0 {
             if buffer.iter().all(u8::is_ascii_whitespace) {
@@ -52,9 +54,11 @@ fn read_header_block<R: BufRead>(reader: &mut R, buffer: &mut Vec<u8>) -> Result
 /// Reads and parses the next header block, returning it with the declared body length.
 ///
 /// Returns `None` when the input ends cleanly before another record.
-fn read_record_header<R: BufRead>(reader: &mut R) -> Option<Result<(RawRecordHeader, u64), Error>> {
+async fn read_record_header<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+) -> Option<Result<(RawRecordHeader, u64), Error>> {
     let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-    match read_header_block(reader, &mut header_buffer) {
+    match read_header_block(reader, &mut header_buffer).await {
         Ok(true) => {}
         Ok(false) => return None,
         Err(e) => return Some(Err(e)),
@@ -79,24 +83,24 @@ fn read_record_header<R: BufRead>(reader: &mut R) -> Option<Result<(RawRecordHea
 }
 
 /// Reads a body of `len` bytes followed by the record terminator.
-fn read_body<R: BufRead>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
+async fn read_body<R: AsyncBufRead + Unpin>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
     let mut body = Vec::with_capacity(std::cmp::min(len, MB as u64) as usize);
-    reader
-        .by_ref()
+    (&mut *reader)
         .take(len)
         .read_to_end(&mut body)
+        .await
         .map_err(Error::ReadData)?;
     if (body.len() as u64) < len {
         return Err(Error::UnexpectedEOB);
     }
-    read_terminator(reader)?;
+    read_terminator(reader).await?;
     Ok(body)
 }
 
 /// Reads the `\r\n\r\n` that ends every record.
-fn read_terminator<R: Read>(reader: &mut R) -> Result<(), Error> {
+async fn read_terminator<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Error> {
     let mut crlfs = [0; 4];
-    match reader.read_exact(&mut crlfs) {
+    match reader.read_exact(&mut crlfs).await {
         Ok(()) => (),
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Err(Error::UnexpectedEOB),
         Err(io) => return Err(Error::ReadData(io)),
@@ -117,13 +121,13 @@ pub struct WarcReader<R> {
     reader: R,
 }
 
-impl<R: BufRead> WarcReader<R> {
+impl<R: AsyncBufRead + Unpin> WarcReader<R> {
     /// Create a new reader.
     pub fn new(r: R) -> Self {
         WarcReader { reader: r }
     }
 
-    /// Create an iterator over all of the raw records read.
+    /// Create a stream over all of the raw records read.
     ///
     /// This only does well-formedness checks on the headers. See `RawRecordHeader` for more
     /// information.
@@ -131,7 +135,7 @@ impl<R: BufRead> WarcReader<R> {
         RawRecordIter::new(self.reader)
     }
 
-    /// Create an iterator over all of the records read.
+    /// Create a stream over all of the records read.
     ///
     /// This will fully build each record and check it for semantic correctness. See the `Record`
     /// type for more information.
@@ -148,70 +152,65 @@ impl<R: BufRead> WarcReader<R> {
     }
 }
 
-impl WarcReader<BufReader<StdReader>> {
+impl WarcReader<FuturesAsyncReader> {
     /// Create a new reader which reads `path` from `operator`.
     ///
-    /// Reads go through OpenDAL's default timeout and retry layers. The calling thread must have
-    /// entered a Tokio runtime without running async code on it, such as inside
-    /// `tokio::task::spawn_blocking` or after `Runtime::enter`.
-    pub fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
-        Ok(WarcReader::new(storage::reader(operator, path)?))
+    /// Reads go through OpenDAL's default timeout and retry layers.
+    pub async fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
+        Ok(WarcReader::new(storage::reader(operator, path).await?))
     }
 }
 
 #[cfg(feature = "gzip")]
-impl WarcReader<BufReader<GzipReader<BufReader<StdReader>>>> {
-    /// Create a new reader which reads a compressed `path` from `operator`.
+impl WarcReader<GzipReader<FuturesAsyncReader>> {
+    /// Create a new reader which reads a GZIP-compressed `path` from `operator`.
     ///
-    /// Only GZIP compression is currently supported. See [`WarcReader::from_path`] for the
-    /// runtime requirements.
-    pub fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
-        let gzip_stream = GzipReader::new(storage::reader(operator, path)?)?;
-        Ok(WarcReader::new(BufReader::new(gzip_stream)))
+    /// See [`GzipReader`] for how members are decompressed.
+    pub async fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
+        let reader = storage::reader(operator, path).await?;
+        Ok(WarcReader::new(GzipReader::new(reader)))
     }
 }
 
-/// An iterator of raw records streamed from a reader. See `RawRecord` for more information.
+/// A stream of raw records read from a reader. See `RawRecord` for more information.
 pub struct RawRecordIter<R> {
     reader: R,
 }
 
-impl<R: BufRead> RawRecordIter<R> {
+impl<R: AsyncBufRead + Unpin> RawRecordIter<R> {
     pub(crate) fn new(reader: R) -> RawRecordIter<R> {
         RawRecordIter { reader }
     }
-}
 
-impl<R: BufRead> Iterator for RawRecordIter<R> {
-    type Item = Result<(RawRecordHeader, Vec<u8>), Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (headers, body_len) = match read_record_header(&mut self.reader)? {
+    /// Read the next raw record, or `None` once the input ends.
+    pub async fn next(&mut self) -> Option<Result<(RawRecordHeader, Vec<u8>), Error>> {
+        let (headers, body_len) = match read_record_header(&mut self.reader).await? {
             Ok(header) => header,
             Err(e) => return Some(Err(e)),
         };
-        Some(read_body(&mut self.reader, body_len).map(|body| (headers, body)))
+        Some(
+            read_body(&mut self.reader, body_len)
+                .await
+                .map(|body| (headers, body)),
+        )
     }
 }
 
-/// An iterator which returns the records read by a reader.
+/// A stream of records read from a reader.
 pub struct RecordIter<R> {
     raw: RawRecordIter<R>,
 }
 
-impl<R: BufRead> RecordIter<R> {
+impl<R: AsyncBufRead + Unpin> RecordIter<R> {
     pub(crate) fn new(reader: R) -> RecordIter<R> {
         RecordIter {
             raw: RawRecordIter::new(reader),
         }
     }
-}
 
-impl<R: BufRead> Iterator for RecordIter<R> {
-    type Item = Result<Record<BufferedBody>, Error>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let record = self.raw.next()?.and_then(|(headers, body)| {
+    /// Read the next record, or `None` once the input ends.
+    pub async fn next(&mut self) -> Option<Result<Record<BufferedBody>, Error>> {
+        let record = self.raw.next().await?.and_then(|(headers, body)| {
             Record::<EmptyBody>::try_from(headers).map(|record| record.add_body(body))
         });
         Some(record)
@@ -231,7 +230,7 @@ pub struct StreamingIter<'r, R> {
     first_record: bool,
 }
 
-impl<R: BufRead> StreamingIter<'_, R> {
+impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
     pub(crate) fn new(reader: &mut R) -> StreamingIter<'_, R> {
         StreamingIter {
             reader,
@@ -240,19 +239,20 @@ impl<R: BufRead> StreamingIter<'_, R> {
         }
     }
 
-    fn skip_body(&mut self) -> Result<(), Error> {
+    async fn skip_body(&mut self) -> Result<(), Error> {
         let body_bytes_left = self.current_item_size;
         if body_bytes_left > 0 {
-            let skipped = io::copy(
-                &mut self.reader.by_ref().take(body_bytes_left),
-                &mut io::sink(),
+            let skipped = futures_util::io::copy_buf(
+                (&mut *self.reader).take(body_bytes_left),
+                &mut futures_util::io::sink(),
             )
+            .await
             .map_err(Error::ReadData)?;
             if skipped < body_bytes_left {
                 return Err(Error::UnexpectedEOB);
             }
         }
-        read_terminator(self.reader)
+        read_terminator(self.reader).await
     }
 
     /// Advance the stream to the next item.
@@ -261,14 +261,14 @@ impl<R: BufRead> StreamingIter<'_, R> {
     /// * Some(Ok(r))` is the next record read from the stream.
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned.
-    pub fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
+    pub async fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
         if self.first_record {
             self.first_record = false;
-        } else if let Err(e) = self.skip_body() {
+        } else if let Err(e) = self.skip_body().await {
             return Some(Err(e));
         }
 
-        let (headers, body_len) = match read_record_header(self.reader)? {
+        let (headers, body_len) = match read_record_header(self.reader).await? {
             Ok(header) => header,
             Err(e) => return Some(Err(e)),
         };
@@ -288,16 +288,12 @@ impl<R: BufRead> StreamingIter<'_, R> {
 
 #[cfg(test)]
 mod iter_raw_tests {
+    use futures_executor::block_on;
+    use futures_util::io::Cursor;
     use std::collections::HashMap;
-    use std::io::{BufReader, Cursor};
     use std::iter::FromIterator;
 
     use crate::{WarcHeader, WarcReader};
-    macro_rules! create_reader {
-        ($raw:expr) => {{
-            BufReader::new(Cursor::new($raw.get(..).unwrap()))
-        }};
-    }
 
     #[test]
     fn basic_record() {
@@ -324,8 +320,8 @@ mod iter_raw_tests {
         ]);
         let expected_body: &[u8] = b"12345";
 
-        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
-        let (headers, body) = reader.next().unwrap().unwrap();
+        let mut reader = WarcReader::new(Cursor::new(&raw[..])).iter_raw_records();
+        let (headers, body) = block_on(reader.next()).unwrap().unwrap();
         assert_eq!(headers.version, expected_version);
         assert_eq!(headers.as_ref(), &expected_headers);
         assert_eq!(body, expected_body);
@@ -352,7 +348,7 @@ mod iter_raw_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw)).iter_raw_records();
+        let mut reader = WarcReader::new(Cursor::new(&raw[..])).iter_raw_records();
         {
             let expected_version = "1.0";
             let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
@@ -366,7 +362,7 @@ mod iter_raw_tests {
             ]);
             let expected_body: &[u8] = b"12345";
 
-            let (headers, body) = reader.next().unwrap().unwrap();
+            let (headers, body) = block_on(reader.next()).unwrap().unwrap();
             assert_eq!(headers.version, expected_version);
             assert_eq!(headers.as_ref(), &expected_headers);
             assert_eq!(body, expected_body);
@@ -385,7 +381,7 @@ mod iter_raw_tests {
             ]);
             let expected_body: &[u8] = b"123456";
 
-            let (headers, body) = reader.next().unwrap().unwrap();
+            let (headers, body) = block_on(reader.next()).unwrap().unwrap();
             assert_eq!(headers.version, expected_version);
             assert_eq!(headers.as_ref(), &expected_headers);
             assert_eq!(body, expected_body);
@@ -395,15 +391,10 @@ mod iter_raw_tests {
 
 #[cfg(test)]
 mod next_item_tests {
-    use std::io::{BufReader, Cursor};
+    use futures_executor::block_on;
+    use futures_util::io::Cursor;
 
     use crate::WarcReader;
-
-    macro_rules! create_reader {
-        ($raw:expr) => {{
-            BufReader::new(Cursor::new($raw.get(..).unwrap()))
-        }};
-    }
 
     #[test]
     fn first_item() {
@@ -418,18 +409,22 @@ mod next_item_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw));
-        let mut stream_iter = reader.stream_records();
-        let record = stream_iter
-            .next_item()
-            .unwrap()
-            .unwrap()
-            .into_buffered()
-            .unwrap();
-        assert_eq!(record.warc_version(), "1.0");
-        assert_eq!(record.content_length(), 5);
-        assert_eq!(record.warc_id(), "<urn:test:basic-record:record-0>");
-        assert_eq!(record.body(), b"12345");
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
+            let record = stream_iter
+                .next_item()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_buffered()
+                .await
+                .unwrap();
+            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.content_length(), 5);
+            assert_eq!(record.warc_id(), "<urn:test:basic-record:record-0>");
+            assert_eq!(record.body(), b"12345");
+        });
     }
 
     #[test]
@@ -453,34 +448,40 @@ mod next_item_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw));
-        let mut stream_iter = reader.stream_records();
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
 
-        {
-            let record = stream_iter
-                .next_item()
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 5);
-            assert_eq!(record.warc_id(), "<urn:test:two-records:record-0>");
-            assert_eq!(record.body(), b"12345");
-        }
+            {
+                let record = stream_iter
+                    .next_item()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .into_buffered()
+                    .await
+                    .unwrap();
+                assert_eq!(record.warc_version(), "1.0");
+                assert_eq!(record.content_length(), 5);
+                assert_eq!(record.warc_id(), "<urn:test:two-records:record-0>");
+                assert_eq!(record.body(), b"12345");
+            }
 
-        {
-            let record = stream_iter
-                .next_item()
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 6);
-            assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
-            assert_eq!(record.body(), b"123456");
-        }
+            {
+                let record = stream_iter
+                    .next_item()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .into_buffered()
+                    .await
+                    .unwrap();
+                assert_eq!(record.warc_version(), "1.0");
+                assert_eq!(record.content_length(), 6);
+                assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
+                assert_eq!(record.body(), b"123456");
+            }
+        });
     }
 
     #[test]
@@ -504,23 +505,25 @@ mod next_item_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw));
-        let mut stream_iter = reader.stream_records();
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
 
-        let _skipped = stream_iter.next_item().unwrap().unwrap();
+            let _skipped = stream_iter.next_item().await.unwrap().unwrap();
 
-        {
             let record = stream_iter
                 .next_item()
+                .await
                 .unwrap()
                 .unwrap()
                 .into_buffered()
+                .await
                 .unwrap();
             assert_eq!(record.warc_version(), "1.0");
             assert_eq!(record.content_length(), 6);
             assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
             assert_eq!(record.body(), b"123456");
-        }
+        });
     }
 
     #[test]
@@ -552,47 +555,31 @@ mod next_item_tests {
             \r\n\
         ";
 
-        let mut reader = WarcReader::new(create_reader!(raw));
-        let mut stream_iter = reader.stream_records();
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
 
-        {
-            let record = stream_iter
-                .next_item()
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 5);
-            assert_eq!(record.warc_id(), "<urn:test:three-records:record-0>");
-            assert_eq!(record.body(), b"12345");
-        }
-
-        {
-            let record = stream_iter
-                .next_item()
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 6);
-            assert_eq!(record.warc_id(), "<urn:test:three-records:record-1>");
-            assert_eq!(record.body(), b"123456");
-        }
-
-        {
-            let record = stream_iter
-                .next_item()
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 8);
-            assert_eq!(record.warc_id(), "<urn:test:three-records:record-2>");
-            assert_eq!(record.body(), b"12345678");
-        }
+            for (len, id, body) in [
+                (5, "<urn:test:three-records:record-0>", &b"12345"[..]),
+                (6, "<urn:test:three-records:record-1>", &b"123456"[..]),
+                (8, "<urn:test:three-records:record-2>", &b"12345678"[..]),
+            ]
+            .iter()
+            {
+                let record = stream_iter
+                    .next_item()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .into_buffered()
+                    .await
+                    .unwrap();
+                assert_eq!(record.warc_version(), "1.0");
+                assert_eq!(record.content_length(), *len);
+                assert_eq!(record.warc_id(), *id);
+                assert_eq!(record.body(), *body);
+            }
+        });
     }
 
     #[test]
@@ -607,19 +594,23 @@ mod next_item_tests {
         \r\n\
     ";
 
-        let mut reader = WarcReader::new(create_reader!(raw));
-        let mut stream_iter = reader.stream_records();
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
 
-        let record = stream_iter
-            .next_item()
-            .unwrap()
-            .unwrap()
-            .into_buffered()
-            .unwrap();
-        assert_eq!(record.warc_version(), "1.0");
-        assert_eq!(record.content_length(), 0);
-        assert_eq!(record.warc_id(), "<urn:test:empty-content-length>");
-        assert_eq!(record.body(), b"");
+            let record = stream_iter
+                .next_item()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_buffered()
+                .await
+                .unwrap();
+            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.content_length(), 0);
+            assert_eq!(record.warc_id(), "<urn:test:empty-content-length>");
+            assert!(record.body().is_empty());
+        });
     }
 
     #[test]
@@ -643,25 +634,18 @@ mod next_item_tests {
         \r\n\
     ";
 
-        let reader = WarcReader::new(create_reader!(raw));
-        let mut iter = reader.iter_records();
+        let mut iter = WarcReader::new(Cursor::new(&raw[..])).iter_records();
 
-        // Test the first record with Content-Length: 0
-        {
-            let record = iter.next().unwrap().unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 0);
-            assert_eq!(record.warc_id(), "<urn:test:zero-content-length>");
-            assert_eq!(record.body(), b"");
-        }
+        let record = block_on(iter.next()).unwrap().unwrap();
+        assert_eq!(record.warc_version(), "1.0");
+        assert_eq!(record.content_length(), 0);
+        assert_eq!(record.warc_id(), "<urn:test:zero-content-length>");
+        assert!(record.body().is_empty());
 
-        // Test the second record with non-zero Content-Length
-        {
-            let record = iter.next().unwrap().unwrap();
-            assert_eq!(record.warc_version(), "1.0");
-            assert_eq!(record.content_length(), 7);
-            assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");
-            assert_eq!(record.body(), b"1234567");
-        }
+        let record = block_on(iter.next()).unwrap().unwrap();
+        assert_eq!(record.warc_version(), "1.0");
+        assert_eq!(record.content_length(), 7);
+        assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");
+        assert_eq!(record.body(), b"1234567");
     }
 }

@@ -5,9 +5,8 @@ use chrono::prelude::*;
 use warc::WarcHeader;
 use warc::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
 
-fn main() -> Result<(), std::io::Error> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    let _guard = runtime.enter();
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
     let operator = Operator::new(Fs::default().root("."))?;
     let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let body = format!("wrote to the file on {}", date);
@@ -35,10 +34,10 @@ fn main() -> Result<(), std::io::Error> {
         .collect(),
     };
 
-    let mut file = WarcWriter::from_path(&operator, "warc_example.warc")?;
+    let mut file = WarcWriter::from_path(&operator, "warc_example.warc").await?;
 
-    let bytes_written = file.write_raw(headers, &body)?;
-    file.close()?;
+    let bytes_written = file.write_raw(headers, &body).await?;
+    file.close().await?;
 
     println!("{} bytes written.", bytes_written);
 

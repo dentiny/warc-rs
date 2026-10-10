@@ -25,26 +25,32 @@ forks are not picked up automatically.
 warc = { git = "https://github.com/dentiny/warc-rs" }
 ```
 
-`WarcReader::new` and `WarcWriter::new` accept any `BufRead` or `Write`.
-`from_path` and `from_path_gzip` open files through an
-[OpenDAL](https://opendal.apache.org) `Operator` (re-exported as
-`warc::opendal`) with its default timeout and retry layers. The memory, local
-filesystem, and S3 services are enabled.
+IO is async. `WarcReader::new` and `WarcWriter::new` accept any
+`futures::io::AsyncBufRead` or `AsyncWrite`. `from_path` and `from_path_gzip`
+open files through an [OpenDAL](https://opendal.apache.org) `Operator`
+(re-exported as `warc::opendal`) with its default timeout and retry layers. The
+memory, local filesystem, and S3 services are enabled.
 
 ```rust
 use warc::opendal::{services::Fs, Operator};
 use warc::WarcReader;
 
-let runtime = tokio::runtime::Runtime::new()?;
-let _guard = runtime.enter();
 let operator = Operator::new(Fs::default().root("/data"))?;
-let reader = WarcReader::from_path_gzip(&operator, "crawl.warc.gz")?;
+let reader = WarcReader::from_path_gzip(&operator, "crawl.warc.gz").await?;
+let mut records = reader.iter_records();
+while let Some(record) = records.next().await {
+    let record = record?;
+}
 ```
 
-These constructors use OpenDAL's blocking API. Call them on a thread that has
-entered a Tokio runtime but is not running async code, such as inside
-`tokio::task::spawn_blocking` or after `Runtime::enter`. Writers must be
-finished with `close()`; dropping one without closing may lose the file.
+Writers must be finished with `close().await`; dropping one without closing may
+lose the file.
+
+GZIP compression stays synchronous and in memory. The writer compresses each
+record as its own GZIP member. `GzipReader` decodes one member at a time and
+buffers it fully, so memory use grows with the largest member. This suits WARC
+files that use one member per record, as the WARC specification recommends and
+Common Crawl does.
 
 ## License
 

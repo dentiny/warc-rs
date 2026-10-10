@@ -1,8 +1,10 @@
 use chrono::prelude::*;
+use futures_util::io::{AsyncRead, AsyncReadExt};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
-use std::io::Read;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use uuid::Uuid;
 
@@ -18,7 +20,9 @@ use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
 
 mod streaming_trait {
-    use std::io::Read;
+    use futures_util::io::AsyncRead;
+    use std::pin::Pin;
+    use std::task::{ready, Context, Poll};
 
     /// An associated type indicating how the body of a record is represented.
     pub trait BodyKind {
@@ -35,8 +39,8 @@ mod streaming_trait {
     }
 
     /// An associated type indicating the body is streamed from a reader.
-    pub struct StreamingBody<'t, T: Read + 't>(&'t mut T, &'t mut u64);
-    impl<'t, T: Read + 't> StreamingBody<'t, T> {
+    pub struct StreamingBody<'t, T: AsyncRead + Unpin + 't>(&'t mut T, &'t mut u64);
+    impl<'t, T: AsyncRead + Unpin + 't> StreamingBody<'t, T> {
         pub(crate) fn new(stream: &'t mut T, max_len: &'t mut u64) -> StreamingBody<'t, T> {
             StreamingBody(stream, max_len)
         }
@@ -45,18 +49,26 @@ mod streaming_trait {
             *self.1
         }
     }
-    impl<'t, T: Read + 't> BodyKind for StreamingBody<'t, T> {
+    impl<'t, T: AsyncRead + Unpin + 't> BodyKind for StreamingBody<'t, T> {
         fn content_length(&self) -> u64 {
             *self.1
         }
     }
 
-    impl<'t, T: Read + 't> Read for StreamingBody<'t, T> {
-        fn read(&mut self, data: &mut [u8]) -> std::io::Result<usize> {
-            let max_read = std::cmp::min(data.len(), *self.1 as usize);
-            self.0.read(&mut data[..max_read]).inspect(|&n| {
-                *self.1 -= n as u64;
-            })
+    impl<'t, T: AsyncRead + Unpin + 't> AsyncRead for StreamingBody<'t, T> {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            data: &mut [u8],
+        ) -> Poll<std::io::Result<usize>> {
+            let this = self.get_mut();
+            let max_read = std::cmp::min(data.len() as u64, *this.1) as usize;
+            if max_read == 0 {
+                return Poll::Ready(Ok(0));
+            }
+            let n = ready!(Pin::new(&mut *this.0).poll_read(cx, &mut data[..max_read]))?;
+            *this.1 -= n as u64;
+            Poll::Ready(Ok(n))
         }
     }
 
@@ -505,7 +517,7 @@ impl Record<EmptyBody> {
 
     /// Add a streaming body to this record, whose expected size may not match the actual stream
     /// length.
-    pub fn add_fixed_stream<'r, R: Read + 'r>(
+    pub fn add_fixed_stream<'r, R: AsyncRead + Unpin + 'r>(
         self,
         stream: &'r mut R,
         len: &'r mut u64,
@@ -550,24 +562,28 @@ impl Record<BufferedBody> {
     }
 }
 
-impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
+impl<'t, T: AsyncRead + Unpin + 't> Record<StreamingBody<'t, T>> {
     /// Returns a record with a buffered body by collecting the streaming body.
     ///
     /// # Errors
     ///
     /// This method can fail if the underlying stream returns an error. If this happens, the
     /// state of the stream is not guaranteed.
-    pub fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
+    pub async fn into_buffered(mut self) -> std::io::Result<Record<BufferedBody>> {
         let mut body =
             Vec::with_capacity(std::cmp::min(self.body.len(), MAX_BODY_PREALLOCATION) as usize);
-        self.body.read_to_end(&mut body)?;
+        self.body.read_to_end(&mut body).await?;
         Ok(self.replace_body_kind(BufferedBody(body)))
     }
 }
 
-impl<'t, T: Read + 't> Read for Record<StreamingBody<'t, T>> {
-    fn read(&mut self, dst: &mut [u8]) -> Result<usize, std::io::Error> {
-        self.body.read(dst)
+impl<'t, T: AsyncRead + Unpin + 't> AsyncRead for Record<StreamingBody<'t, T>> {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        dst: &mut [u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().body).poll_read(cx, dst)
     }
 }
 

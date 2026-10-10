@@ -9,7 +9,8 @@ macro_rules! usage_err {
     };
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
     let mut args = std::env::args_os().skip(1);
 
     let warc_name = args
@@ -21,16 +22,14 @@ fn main() -> std::io::Result<()> {
         Err(usage_err!("one or more filtered file names not supplied"))?;
     }
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    let _guard = runtime.enter();
     let operator = Operator::new(Fs::default().root("/"))?;
     let warc_path = std::fs::canonicalize(warc_name)?;
-    let mut file = WarcReader::from_path_gzip(&operator, &warc_path.to_string_lossy())?;
+    let mut file = WarcReader::from_path_gzip(&operator, &warc_path.to_string_lossy()).await?;
 
     let mut count = 0;
     let mut skipped = 0;
     let mut stream_iter = file.stream_records();
-    while let Some(record) = stream_iter.next_item() {
+    while let Some(record) = stream_iter.next_item().await {
         let record = record.expect("read of headers ok");
         count += 1;
         match record.header(WarcHeader::TargetURI).map(|s| s.to_string()) {
@@ -39,7 +38,7 @@ fn main() -> std::io::Result<()> {
                 skipped += 1;
             }
             _ => {
-                let buffered = record.into_buffered().expect("read of record ok");
+                let buffered = record.into_buffered().await.expect("read of record ok");
                 println!(
                     "Found record. Data:\n{}",
                     String::from_utf8_lossy(buffered.body())

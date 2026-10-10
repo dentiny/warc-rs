@@ -6,6 +6,11 @@ pub use error::Error;
 
 pub use opendal;
 
+#[cfg(feature = "gzip")]
+mod gzip;
+#[cfg(feature = "gzip")]
+pub use gzip::GzipReader;
+
 mod storage;
 
 mod warc_reader;

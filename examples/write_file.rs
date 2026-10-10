@@ -4,9 +4,8 @@ use chrono::prelude::*;
 
 use warc::{BufferedBody, Record, RecordType, WarcHeader, WarcWriter};
 
-fn main() -> Result<(), std::io::Error> {
-    let runtime = tokio::runtime::Runtime::new()?;
-    let _guard = runtime.enter();
+#[tokio::main]
+async fn main() -> Result<(), std::io::Error> {
     let operator = Operator::new(Fs::default().root("."))?;
     let date = Utc::now();
     let body = format!("wrote to the file on {}", date);
@@ -20,10 +19,10 @@ fn main() -> Result<(), std::io::Error> {
         .expect("BUG: should be a valid IP address");
     let record = headers.add_body(body);
 
-    let mut file = WarcWriter::from_path(&operator, "warc_example.warc")?;
+    let mut file = WarcWriter::from_path(&operator, "warc_example.warc").await?;
 
-    let bytes_written = file.write(&record)?;
-    file.close()?;
+    let bytes_written = file.write(&record).await?;
+    file.close().await?;
 
     println!("{} bytes written.", bytes_written);
 
