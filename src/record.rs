@@ -11,6 +11,9 @@ use crate::record_type::RecordType;
 use crate::truncated_type::TruncatedType;
 use crate::Error as WarcError;
 
+/// Content-Length comes from untrusted input, so it only seeds the buffer up to this size.
+const MAX_BODY_PREALLOCATION: u64 = 16 * 1_048_576;
+
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};
 
@@ -343,6 +346,8 @@ impl<T: BodyKind> Record<T> {
     }
 
     /// Return the WARC header requested if present in this record, or `None`.
+    ///
+    /// Values that are not valid UTF-8 are converted lossily.
     pub fn header(&self, header: WarcHeader) -> Option<Cow<'_, str>> {
         match &header {
             WarcHeader::ContentLength => {
@@ -357,7 +362,7 @@ impl<T: BodyKind> Record<T> {
                 .headers
                 .as_ref()
                 .get(&header)
-                .map(|h| Cow::Owned(String::from_utf8(h.clone()).unwrap())),
+                .map(|h| String::from_utf8_lossy(h)),
         }
     }
 
@@ -413,7 +418,12 @@ impl<T: BodyKind> Record<T> {
                 .headers
                 .as_mut()
                 .insert(header, Vec::from(value))
-                .map(|v| Cow::Owned(String::from_utf8(v).unwrap()))),
+                .map(|v| {
+                    Cow::Owned(
+                        String::from_utf8(v)
+                            .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+                    )
+                })),
         }
     }
 
@@ -577,7 +587,8 @@ impl<'t, T: Read + 't> Record<StreamingBody<'t, T>> {
         } = self;
 
         let buf = {
-            let mut body_vec = Vec::with_capacity(body.len() as usize);
+            let mut body_vec =
+                Vec::with_capacity(std::cmp::min(body.len(), MAX_BODY_PREALLOCATION) as usize);
             body.read_to_end(&mut body_vec)?;
             body_vec
         };
