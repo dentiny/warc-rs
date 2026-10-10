@@ -87,11 +87,7 @@ impl<R: BufRead> WarcReader<R> {
 impl WarcReader<BufReader<fs::File>> {
     /// Create a new reader which reads from file.
     pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)?;
+        let file = fs::File::open(&path)?;
         let reader = BufReader::with_capacity(MB, file);
 
         Ok(WarcReader::new(reader))
