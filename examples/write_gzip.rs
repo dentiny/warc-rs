@@ -1,9 +1,14 @@
+use warc::opendal::services::Fs;
+use warc::opendal::Operator;
 use chrono::prelude::*;
 
 use warc::WarcHeader;
 use warc::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
 
 fn main() -> Result<(), std::io::Error> {
+    let runtime = tokio::runtime::Runtime::new()?;
+    let _guard = runtime.enter();
+    let operator = Operator::new(Fs::default().root("."))?;
     let date = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let body = format!("wrote to the file on {}", date);
     let body = body.into_bytes();
@@ -30,13 +35,10 @@ fn main() -> Result<(), std::io::Error> {
         .collect(),
     };
 
-    let mut file = WarcWriter::from_path_gzip("warc_example.warc.gz")?;
+    let mut file = WarcWriter::from_path_gzip(&operator, "warc_example.warc.gz")?;
 
     let bytes_written = file.write_raw(headers, &body)?;
-
-    // NB: the compression stream must be finish()ed, or the file will be truncated
-    let gzip_stream = file.into_inner()?;
-    gzip_stream.finish().into_result()?;
+    file.close()?;
 
     println!("{} bytes written.", bytes_written);
 

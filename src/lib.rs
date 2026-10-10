@@ -4,6 +4,10 @@
 mod error;
 pub use error::Error;
 
+pub use opendal;
+
+mod storage;
+
 mod warc_reader;
 pub use warc_reader::*;
 mod warc_writer;

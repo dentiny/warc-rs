@@ -1,3 +1,5 @@
+use warc::opendal::services::Fs;
+use warc::opendal::Operator;
 use warc::WarcHeader;
 use warc::WarcReader;
 
@@ -19,7 +21,11 @@ fn main() -> std::io::Result<()> {
         Err(usage_err!("one or more filtered file names not supplied"))?;
     }
 
-    let mut file = WarcReader::from_path_gzip(warc_name)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let _guard = runtime.enter();
+    let operator = Operator::new(Fs::default().root("/"))?;
+    let warc_path = std::fs::canonicalize(warc_name)?;
+    let mut file = WarcReader::from_path_gzip(&operator, &warc_path.to_string_lossy())?;
 
     let mut count = 0;
     let mut skipped = 0;

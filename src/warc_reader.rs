@@ -1,11 +1,12 @@
-use crate::parser;
+use crate::{parser, storage};
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
 
+use opendal::blocking::StdReader;
+use opendal::Operator;
+
 use std::convert::TryFrom;
-use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader, Read};
-use std::path::Path;
 
 #[cfg(feature = "gzip")]
 use libflate::gzip::MultiDecoder as GzipReader;
@@ -147,25 +148,25 @@ impl<R: BufRead> WarcReader<R> {
     }
 }
 
-impl WarcReader<BufReader<fs::File>> {
-    /// Create a new reader which reads from file.
-    pub fn from_path<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::File::open(&path)?;
-        let reader = BufReader::with_capacity(MB, file);
-
-        Ok(WarcReader::new(reader))
+impl WarcReader<BufReader<StdReader>> {
+    /// Create a new reader which reads `path` from `operator`.
+    ///
+    /// Reads go through OpenDAL's default timeout and retry layers. The calling thread must have
+    /// entered a Tokio runtime without running async code on it, such as inside
+    /// `tokio::task::spawn_blocking` or after `Runtime::enter`.
+    pub fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
+        Ok(WarcReader::new(storage::reader(operator, path)?))
     }
 }
 
 #[cfg(feature = "gzip")]
-impl WarcReader<BufReader<GzipReader<BufReader<std::fs::File>>>> {
-    /// Create a new reader which reads from a compressed file.
+impl WarcReader<BufReader<GzipReader<BufReader<StdReader>>>> {
+    /// Create a new reader which reads a compressed `path` from `operator`.
     ///
-    /// Only GZIP compression is currently supported.
-    pub fn from_path_gzip<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let file = fs::File::open(&path)?;
-
-        let gzip_stream = GzipReader::new(BufReader::with_capacity(MB, file))?;
+    /// Only GZIP compression is currently supported. See [`WarcReader::from_path`] for the
+    /// runtime requirements.
+    pub fn from_path_gzip(operator: &Operator, path: &str) -> io::Result<Self> {
+        let gzip_stream = GzipReader::new(storage::reader(operator, path)?)?;
         Ok(WarcReader::new(BufReader::new(gzip_stream)))
     }
 }

@@ -732,7 +732,7 @@ mod record_tests {
     fn body() {
         let mut record = Record::<BufferedBody>::default();
         assert_eq!(record.content_length(), 0);
-        assert_eq!(record.body(), &[]);
+        assert!(record.body().is_empty());
         record.replace_body(b"hello!!".to_vec());
         assert_eq!(record.content_length(), 7);
         assert_eq!(record.body(), b"hello!!");
