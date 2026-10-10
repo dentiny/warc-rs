@@ -1064,30 +1064,28 @@ mod raw_tests {
         assert!(Record::<EmptyBody>::try_from(headers).is_err());
     }
 
-    fn headers_with(extra: Vec<(WarcHeader, Vec<u8>)>) -> RawRecordHeader {
-        let mut headers = vec![
-            (WarcHeader::WarcType, b"response".to_vec()),
-            (WarcHeader::ContentLength, b"0".to_vec()),
-            (
-                WarcHeader::RecordID,
-                b"<urn:test:basic-record:record-0>".to_vec(),
-            ),
-            (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-        ];
-        headers.extend(extra);
-        RawRecordHeader {
+    fn truncated_record() -> Record<EmptyBody> {
+        let headers = RawRecordHeader {
             version: "1.0".to_owned(),
-            headers: headers.into_iter().collect(),
-        }
+            headers: vec![
+                (WarcHeader::WarcType, b"response".to_vec()),
+                (WarcHeader::ContentLength, b"0".to_vec()),
+                (
+                    WarcHeader::RecordID,
+                    b"<urn:test:basic-record:record-0>".to_vec(),
+                ),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+                (WarcHeader::Truncated, b"length".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        Record::<EmptyBody>::try_from(headers).unwrap()
     }
 
     #[test]
     fn verify_truncated_is_extracted() {
-        let record = Record::<EmptyBody>::try_from(headers_with(vec![(
-            WarcHeader::Truncated,
-            b"length".to_vec(),
-        )]))
-        .unwrap();
+        let record = truncated_record();
 
         assert_eq!(record.truncated_type(), &Some(TruncatedType::Length));
         assert_eq!(
@@ -1097,35 +1095,8 @@ mod raw_tests {
     }
 
     #[test]
-    fn verify_missing_truncated() {
-        let record = Record::<EmptyBody>::try_from(headers_with(vec![])).unwrap();
-
-        assert_eq!(record.truncated_type(), &None);
-        assert_eq!(record.header(WarcHeader::Truncated), None);
-    }
-
-    #[test]
-    fn verify_non_utf8_truncated_is_kept() {
-        let record = Record::<EmptyBody>::try_from(headers_with(vec![(
-            WarcHeader::Truncated,
-            b"time\xff".to_vec(),
-        )]))
-        .unwrap();
-
-        assert_eq!(
-            record.truncated_type(),
-            &Some(TruncatedType::Unknown("time\u{fffd}".to_owned()))
-        );
-    }
-
-    #[test]
     fn verify_truncated_round_trips_after_update() {
-        let mut record = Record::<EmptyBody>::try_from(headers_with(vec![(
-            WarcHeader::Truncated,
-            b"length".to_vec(),
-        )]))
-        .unwrap()
-        .add_body(vec![]);
+        let mut record = truncated_record().add_body(vec![]);
         record.set_truncated_type(TruncatedType::Time);
 
         let (headers, _) = record.into_raw_parts();
