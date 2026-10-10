@@ -25,8 +25,7 @@ impl<W: Write> WarcWriter<W> {
     ///
     /// The number of bytes written is returned upon success.
     pub fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        let (headers, body) = record.clone().into_raw_parts();
-        self.write_raw(headers, &body)
+        self.write_raw(record.to_raw_header(), &record.body())
     }
 
     /// Write a single raw record.
@@ -38,21 +37,20 @@ impl<W: Write> WarcWriter<W> {
     {
         let mut bytes_written = 0;
 
-        bytes_written += self.writer.write(&[87, 65, 82, 67, 47])?;
+        bytes_written += self.writer.write(b"WARC/")?;
         bytes_written += self.writer.write(headers.version.as_bytes())?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n")?;
 
         for (token, value) in headers.as_ref().iter() {
             bytes_written += self.writer.write(token.to_string().as_bytes())?;
-            bytes_written += self.writer.write(&[58, 32])?;
+            bytes_written += self.writer.write(b": ")?;
             bytes_written += self.writer.write(value)?;
-            bytes_written += self.writer.write(&[13, 10])?;
+            bytes_written += self.writer.write(b"\r\n")?;
         }
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n")?;
 
         bytes_written += self.writer.write(body.as_ref())?;
-        bytes_written += self.writer.write(&[13, 10])?;
-        bytes_written += self.writer.write(&[13, 10])?;
+        bytes_written += self.writer.write(b"\r\n\r\n")?;
 
         Ok(bytes_written)
     }
