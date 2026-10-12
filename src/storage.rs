@@ -2,26 +2,29 @@ use opendal::layers::{RetryLayer, TimeoutLayer};
 use opendal::{FuturesAsyncReader, FuturesAsyncWriter, Operator};
 
 use std::io;
+use std::time::Duration;
 
-/// Size of each ranged request issued when reading.
-const READ_CHUNK_BYTES: usize = 8 * 1_048_576;
-/// Number of ranged requests kept in flight.
-const READ_CONCURRENCY: usize = 4;
-/// Bytes a reader may have requested ahead of its position.
-pub(crate) const READ_AHEAD_BYTES: u64 = (READ_CHUNK_BYTES * READ_CONCURRENCY) as u64;
+/// Retries per request before an error is returned.
+///
+/// Common Crawl answers `503 SlowDown` to everyone while its bucket is overloaded, often for tens
+/// of seconds, so a few short retries are not enough.
+const RETRY_MAX_TIMES: usize = 10;
+/// Longest delay between retries; delays start at 1s and double, with jitter.
+const RETRY_MAX_DELAY: Duration = Duration::from_secs(30);
 
-/// Opens `path` for reading through OpenDAL's default timeout and retry layers.
+/// Opens `path` for reading as a single streaming request.
+///
+/// Every request may be throttled, so one request per file survives rate limiting far better than
+/// many ranged chunk requests.
 pub(crate) async fn reader(operator: &Operator, path: &str) -> io::Result<FuturesAsyncReader> {
     Ok(with_default_layers(operator)
-        .reader_with(path)
-        .chunk(READ_CHUNK_BYTES)
-        .concurrent(READ_CONCURRENCY)
+        .reader(path)
         .await?
         .into_futures_async_read(..)
         .await?)
 }
 
-/// Opens `path` for writing through OpenDAL's default timeout and retry layers.
+/// Opens `path` for writing.
 pub(crate) async fn writer(operator: &Operator, path: &str) -> io::Result<FuturesAsyncWriter> {
     Ok(with_default_layers(operator)
         .writer(path)
@@ -29,9 +32,14 @@ pub(crate) async fn writer(operator: &Operator, path: &str) -> io::Result<Future
         .into_futures_async_write())
 }
 
+/// Adds timeout and retry layers, and installs OpenDAL's default HTTP transport, which remote
+/// services such as S3 need and which is not installed with default features disabled.
 fn with_default_layers(operator: &Operator) -> Operator {
-    operator
-        .clone()
-        .layer(TimeoutLayer::default())
-        .layer(RetryLayer::default())
+    opendal::install_default();
+    operator.clone().layer(TimeoutLayer::default()).layer(
+        RetryLayer::new()
+            .with_jitter()
+            .with_max_times(RETRY_MAX_TIMES)
+            .with_max_delay(RETRY_MAX_DELAY),
+    )
 }

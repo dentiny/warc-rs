@@ -49,7 +49,7 @@ impl fmt::Display for Error {
             Error::MalformedHeader(ref h, ref r) => {
                 write!(f, "Malformed header: {}: {}", h, r)
             }
-            Error::ReadData(_) => write!(f, "Error reading data source."),
+            Error::ReadData(ref e) => write!(f, "Error reading data source: {}", e),
             Error::ReadOverflow => write!(f, "Read further than expected."),
             Error::UnexpectedEOB => write!(f, "Unexpected end of body."),
         }
@@ -62,5 +62,17 @@ impl error::Error for Error {
             Error::ReadData(ref e) => Some(e),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+    use std::io;
+
+    #[test]
+    fn read_data_display_includes_cause() {
+        let error = Error::ReadData(io::Error::other("SlowDown"));
+        assert_eq!(error.to_string(), "Error reading data source: SlowDown");
     }
 }
