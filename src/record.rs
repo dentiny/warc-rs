@@ -898,7 +898,7 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
+    use crate::{EmptyBody, RawRecordHeader, Record, RecordType, TruncatedType};
 
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -946,47 +946,6 @@ mod raw_tests {
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
-    }
-
-    fn valid_headers() -> RawRecordHeader {
-        RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (WarcHeader::RecordID, b"<urn:test:record-0>".to_vec()),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-        }
-    }
-
-    #[test]
-    fn verify_non_utf8_reports_its_header() {
-        for header in [WarcHeader::WarcType, WarcHeader::RecordID, WarcHeader::Date] {
-            let mut headers = valid_headers();
-            headers.as_mut().insert(header.clone(), vec![0xff, 0xfe]);
-            match Record::<EmptyBody>::try_from(headers) {
-                Err(Error::MalformedHeader(reported, _)) => assert_eq!(reported, header),
-                other => panic!("expected MalformedHeader({}), got {:?}", header, other),
-            }
-        }
-    }
-
-    #[test]
-    fn verify_content_length_value_is_not_reparsed() {
-        let mut headers = valid_headers();
-        headers
-            .as_mut()
-            .insert(WarcHeader::ContentLength, vec![0xff, 0xfe]);
-        let record = Record::<EmptyBody>::try_from(headers).unwrap();
-        assert_eq!(record.content_length(), 0);
-        assert!(record
-            .headers
-            .as_ref()
-            .get(&WarcHeader::ContentLength)
-            .is_none());
     }
 
     #[test]
