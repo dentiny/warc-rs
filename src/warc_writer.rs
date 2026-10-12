@@ -14,6 +14,11 @@ use std::io::Write;
 /// A writer which writes records to an output stream.
 pub struct WarcWriter<W> {
     writer: W,
+    /// Scratch space for the serialized header block, reused across records.
+    header: Vec<u8>,
+    /// Scratch space for each compressed GZIP member, reused across records.
+    #[cfg(feature = "gzip")]
+    member: Vec<u8>,
     #[cfg(feature = "gzip")]
     gzip: bool,
 }
@@ -23,6 +28,9 @@ impl<W: AsyncWrite + Unpin> WarcWriter<W> {
     pub fn new(w: W) -> Self {
         WarcWriter {
             writer: w,
+            header: Vec::new(),
+            #[cfg(feature = "gzip")]
+            member: Vec::new(),
             #[cfg(feature = "gzip")]
             gzip: false,
         }
@@ -32,8 +40,8 @@ impl<W: AsyncWrite + Unpin> WarcWriter<W> {
     #[cfg(feature = "gzip")]
     pub fn new_gzip(w: W) -> Self {
         WarcWriter {
-            writer: w,
             gzip: true,
+            ..WarcWriter::new(w)
         }
     }
 
@@ -41,7 +49,9 @@ impl<W: AsyncWrite + Unpin> WarcWriter<W> {
     ///
     /// The number of uncompressed bytes written is returned upon success.
     pub async fn write(&mut self, record: &Record<BufferedBody>) -> io::Result<usize> {
-        self.write_raw(record.to_raw_header(), &record.body()).await
+        self.header.clear();
+        record.write_header_block(&mut self.header);
+        self.write_header_and_body(record.body()).await
     }
 
     /// Write a single raw record.
@@ -51,29 +61,27 @@ impl<W: AsyncWrite + Unpin> WarcWriter<W> {
     where
         B: AsRef<[u8]>,
     {
-        let mut header = b"WARC/".to_vec();
-        header.extend_from_slice(headers.version.as_bytes());
-        header.extend_from_slice(b"\r\n");
-        for (token, value) in headers.as_ref().iter() {
-            header.extend_from_slice(token.to_string().as_bytes());
-            header.extend_from_slice(b": ");
-            header.extend_from_slice(value);
-            header.extend_from_slice(b"\r\n");
-        }
-        header.extend_from_slice(b"\r\n");
+        self.header.clear();
+        headers.write_header_block(&mut self.header);
+        self.write_header_and_body(body.as_ref()).await
+    }
 
-        let parts: [&[u8]; 3] = [&header, body.as_ref(), b"\r\n\r\n"];
+    /// Writes the header block in `self.header`, followed by `body` and the record terminator.
+    async fn write_header_and_body(&mut self, body: &[u8]) -> io::Result<usize> {
+        let parts: [&[u8]; 3] = [&self.header, body, b"\r\n\r\n"];
         let len = parts.iter().map(|part| part.len()).sum();
 
         #[cfg(feature = "gzip")]
         {
             if self.gzip {
-                let mut encoder = GzipWriter::new(Vec::new())?;
+                let mut member = std::mem::take(&mut self.member);
+                member.clear();
+                let mut encoder = GzipWriter::new(member)?;
                 for part in parts.iter() {
                     encoder.write_all(part)?;
                 }
-                let member = encoder.finish().into_result()?;
-                self.writer.write_all(&member).await?;
+                self.member = encoder.finish().into_result()?;
+                self.writer.write_all(&self.member).await?;
                 return Ok(len);
             }
         }
@@ -119,9 +127,13 @@ impl WarcWriter<FuturesAsyncWriter> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{BufferedBody, EmptyBody, Record, WarcReader, WarcWriter};
+    use crate::{
+        BufferedBody, EmptyBody, Record, RecordBuilder, RecordType, TruncatedType, WarcHeader,
+        WarcReader, WarcWriter,
+    };
 
-    use futures_util::io::AsyncBufRead;
+    use futures_executor::block_on;
+    use futures_util::io::{AsyncBufRead, Cursor};
     use opendal::services::Memory;
     use opendal::Operator;
 
@@ -168,5 +180,28 @@ mod tests {
                 .unwrap();
             assert_reads_back(reader, &records).await;
         }
+    }
+
+    #[test]
+    fn write_emits_every_header() {
+        let record = RecordBuilder::default()
+            .warc_type(RecordType::Response)
+            .truncated_type(TruncatedType::Length)
+            .header(WarcHeader::TargetURI, "https://example.com/")
+            .header(WarcHeader::Unknown("x-custom".to_string()), "value")
+            .body(b"hello".to_vec())
+            .build()
+            .unwrap();
+
+        let mut writer = WarcWriter::new(Vec::new());
+        let written = block_on(writer.write(&record)).unwrap();
+        let output = writer.into_inner();
+        assert_eq!(written, output.len());
+
+        let mut raw = WarcReader::new(Cursor::new(output)).iter_raw_records();
+        let (headers, body) = block_on(raw.next()).unwrap().unwrap();
+        assert_eq!(headers, record.to_raw_header());
+        assert_eq!(body, b"hello");
+        assert!(block_on(raw.next()).is_none());
     }
 }

@@ -183,6 +183,30 @@ impl std::fmt::Display for RawRecordHeader {
     }
 }
 
+fn push_version_line(out: &mut Vec<u8>, version: &str) {
+    out.extend_from_slice(b"WARC/");
+    out.extend_from_slice(version.as_bytes());
+    out.extend_from_slice(b"\r\n");
+}
+
+fn push_header(out: &mut Vec<u8>, name: &str, value: &[u8]) {
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(b": ");
+    out.extend_from_slice(value);
+    out.extend_from_slice(b"\r\n");
+}
+
+impl RawRecordHeader {
+    /// Appends the serialized header block, including the empty line that ends it, to `out`.
+    pub(crate) fn write_header_block(&self, out: &mut Vec<u8>) {
+        push_version_line(out, &self.version);
+        for (header, value) in self.headers.iter() {
+            push_header(out, header.as_str(), value);
+        }
+        out.extend_from_slice(b"\r\n");
+    }
+}
+
 /// A builder for WARC records from data.
 #[derive(Default)]
 pub struct RecordBuilder {
@@ -492,6 +516,46 @@ impl<T: BodyKind> Record<T> {
             ));
         }
         fields
+    }
+
+    /// Appends the serialized header block, including the empty line that ends it, to `out`.
+    ///
+    /// Produces the same headers as `to_raw_header` without cloning them.
+    pub(crate) fn write_header_block(&self, out: &mut Vec<u8>) {
+        push_version_line(out, &self.headers.version);
+        push_header(
+            out,
+            WarcHeader::WarcType.as_str(),
+            self.record_type.as_str().as_bytes(),
+        );
+        push_header(
+            out,
+            WarcHeader::RecordID.as_str(),
+            self.record_id.as_bytes(),
+        );
+        push_header(
+            out,
+            WarcHeader::Date.as_str(),
+            self.record_date
+                .to_rfc3339_opts(SecondsFormat::Secs, true)
+                .as_bytes(),
+        );
+        push_header(
+            out,
+            WarcHeader::ContentLength.as_str(),
+            self.content_length().to_string().as_bytes(),
+        );
+        if let Some(truncated_type) = &self.truncated_type {
+            push_header(
+                out,
+                WarcHeader::Truncated.as_str(),
+                truncated_type.as_str().as_bytes(),
+            );
+        }
+        for (header, value) in self.headers.headers.iter() {
+            push_header(out, header.as_str(), value);
+        }
+        out.extend_from_slice(b"\r\n");
     }
 }
 
