@@ -48,7 +48,7 @@ lose the file.
 
 `stream_records` lets callers skip record bodies. For uncompressed files opened
 with `from_path`, or readers created with `WarcReader::new_seekable`, skipped
-bodies of 4 MiB or more are seeked past instead of read, so they are not
+bodies of 32 MiB or more are seeked past instead of read, so they are not
 downloaded. GZIP streams cannot seek and always read through.
 
 `from_path` and `from_path_gzip` read each file as a single streaming request

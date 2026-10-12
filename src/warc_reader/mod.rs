@@ -66,7 +66,7 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
     /// Create a new reader over a seekable stream.
     ///
     /// When `stream_records` moves to the next record, it seeks past the unread part of the
-    /// current body if at least 4 MiB remain, instead of reading and discarding it.
+    /// current body if at least 32 MiB remain, instead of reading and discarding it.
     pub fn new_seekable(r: R) -> Self {
         WarcReader {
             reader: r,

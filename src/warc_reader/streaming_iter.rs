@@ -12,9 +12,10 @@ use std::pin::Pin;
 
 /// Smallest remaining body that `StreamingIter` skips by seeking rather than reading.
 ///
-/// Seeking a remote reader outside its buffer starts a new request, which costs more than reading
-/// through a small body.
-const SEEK_THRESHOLD: u64 = 4 * 1_048_576;
+/// Seeking a remote reader outside its buffer starts a new request. Rate-limited sources such as
+/// Common Crawl throttle per request, so only bodies large enough to outweigh a possible `503
+/// SlowDown` and its retry delay are worth a seek.
+const SEEK_THRESHOLD: u64 = 32 * 1_048_576;
 
 /// An iterator-like type to "stream" records from a reader.
 ///
