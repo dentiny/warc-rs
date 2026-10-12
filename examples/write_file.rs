@@ -2,7 +2,7 @@ use warc_rs::opendal::services::Fs;
 use warc_rs::opendal::Operator;
 use chrono::prelude::*;
 
-use warc_rs::{BufferedBody, Record, RecordType, WarcHeader, WarcWriter};
+use warc_rs::{Record, RecordType, WarcHeader, WarcWriter};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
@@ -11,7 +11,7 @@ async fn main() -> Result<(), std::io::Error> {
     let body = format!("wrote to the file on {}", date);
     let body = body.into_bytes();
 
-    let mut headers = Record::<BufferedBody>::new();
+    let mut headers = Record::new();
     headers.set_warc_type(RecordType::WarcInfo);
     headers.set_date(date);
     headers
