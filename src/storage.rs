@@ -4,9 +4,9 @@ use opendal::{FuturesAsyncReader, FuturesAsyncWriter, Operator};
 use std::io;
 
 /// Size of each ranged request issued when reading.
-const READ_CHUNK_BYTES: usize = 2 * 1_048_576;
+const READ_CHUNK_BYTES: usize = 8 * 1_048_576;
 /// Number of ranged requests kept in flight.
-const READ_CONCURRENCY: usize = 16;
+const READ_CONCURRENCY: usize = 4;
 /// Bytes a reader may have requested ahead of its position.
 pub(crate) const READ_AHEAD_BYTES: u64 = (READ_CHUNK_BYTES * READ_CONCURRENCY) as u64;
 

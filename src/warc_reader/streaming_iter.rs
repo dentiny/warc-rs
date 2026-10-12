@@ -409,8 +409,8 @@ mod tests {
     #[tokio::test]
     async fn from_path_reads_records_across_chunks() {
         let operator = Operator::new(Memory::default()).unwrap();
-        let first: Vec<u8> = (0..3 * MB + 7).map(|i| i as u8).collect();
-        let last: Vec<u8> = (0..5 * MB + 11).map(|i| (i * 7) as u8).collect();
+        let first: Vec<u8> = (0..11 * MB + 7).map(|i| i as u8).collect();
+        let last: Vec<u8> = (0..13 * MB + 11).map(|i| (i * 7) as u8).collect();
         operator
             .write("a.warc", warc(&[&first, b"hello", &last]))
             .await

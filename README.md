@@ -51,7 +51,7 @@ with `from_path`, or readers created with `WarcReader::new_seekable`, skipped
 bodies of 32 MiB or more are seeked past instead of read, so they are not
 downloaded. GZIP streams cannot seek and always read through.
 
-`from_path` and `from_path_gzip` fetch 2 MiB ranges with up to 16 in flight, so
+`from_path` and `from_path_gzip` fetch 8 MiB ranges with up to 4 in flight, so
 each reader may buffer about 32 MiB ahead.
 
 GZIP compression stays synchronous and in memory. The writer compresses each

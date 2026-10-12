@@ -78,8 +78,8 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
 impl WarcReader<FuturesAsyncReader> {
     /// Create a new reader which reads `path` from `operator`.
     ///
-    /// Reads go through OpenDAL's default timeout and retry layers, and fetch 2 MiB ranges with up
-    /// to 16 in flight, so each reader may buffer about 32 MiB ahead. Large bodies skipped by
+    /// Reads go through OpenDAL's default timeout and retry layers, and fetch 8 MiB ranges with up
+    /// to 4 in flight, so each reader may buffer about 32 MiB ahead. Large bodies skipped by
     /// `stream_records` are seeked past rather than downloaded; see `new_seekable`.
     pub async fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
         Ok(WarcReader::new_seekable(

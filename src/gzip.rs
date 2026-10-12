@@ -16,7 +16,7 @@ impl<R: AsyncBufRead> GzipReader<R> {
     pub fn new(inner: R) -> Self {
         let mut decoder = GzipDecoder::new(inner);
         decoder.multiple_members(true);
-        GzipReader(BufReader::new(decoder))
+        GzipReader(BufReader::with_capacity(64 * 1024, decoder))
     }
 }
 
