@@ -1,104 +1,42 @@
-use futures_util::io::{AsyncBufRead, AsyncRead};
-use libflate::gzip::Decoder;
+use async_compression::futures::bufread::GzipDecoder;
+use futures_util::io::{AsyncBufRead, AsyncRead, BufReader};
 
-use std::cmp;
 use std::io;
-use std::io::{Cursor, Read};
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
-
-const MIN_READ_AHEAD: usize = 64 * 1_024;
+use std::task::{Context, Poll};
 
 /// An async reader which decompresses a multi-member GZIP stream.
 ///
-/// Decompression is synchronous: each member is buffered until it is complete, then decoded in
-/// memory. Memory use therefore grows with the largest member, so this suits WARC files that
-/// compress each record as its own member, as the WARC specification recommends.
-pub struct GzipReader<R> {
-    inner: R,
-    input: Vec<u8>,
-    /// Bytes `input` must hold before decoding is retried after an incomplete member.
-    wanted: usize,
-    output: Vec<u8>,
-    output_pos: usize,
-    eof: bool,
-}
+/// Decompression is incremental, so memory use stays bounded regardless of member size. Both
+/// per-record members, as the WARC specification recommends, and whole-file compression work.
+pub struct GzipReader<R>(BufReader<GzipDecoder<R>>);
 
-impl<R> GzipReader<R> {
+impl<R: AsyncBufRead> GzipReader<R> {
     /// Create a reader which decompresses `inner`.
     pub fn new(inner: R) -> Self {
-        GzipReader {
-            inner,
-            input: Vec::new(),
-            wanted: 0,
-            output: Vec::new(),
-            output_pos: 0,
-            eof: false,
-        }
+        let mut decoder = GzipDecoder::new(inner);
+        decoder.multiple_members(true);
+        GzipReader(BufReader::new(decoder))
     }
-}
-
-/// Decodes the first member of `input`, returning its data and the compressed length.
-fn decode_member(input: &[u8]) -> io::Result<(Vec<u8>, usize)> {
-    let mut cursor = Cursor::new(input);
-    let mut output = Vec::new();
-    Decoder::new(&mut cursor)?.read_to_end(&mut output)?;
-    Ok((output, cursor.position() as usize))
 }
 
 impl<R: AsyncBufRead + Unpin> AsyncBufRead for GzipReader<R> {
     fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
-        let this = self.get_mut();
-        loop {
-            if this.output_pos < this.output.len() {
-                return Poll::Ready(Ok(&this.output[this.output_pos..]));
-            }
-            let ready_to_decode = this.input.len() >= cmp::max(this.wanted, 1);
-            if ready_to_decode || (this.eof && !this.input.is_empty()) {
-                match decode_member(&this.input) {
-                    Ok((output, used)) => {
-                        this.input.drain(..used);
-                        this.output = output;
-                        this.output_pos = 0;
-                        this.wanted = 0;
-                        continue;
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::UnexpectedEof && !this.eof => {
-                        this.wanted = cmp::max(this.input.len() * 2, MIN_READ_AHEAD);
-                    }
-                    Err(e) => return Poll::Ready(Err(e)),
-                }
-            }
-            if this.eof {
-                return Poll::Ready(Ok(&[]));
-            }
-            let chunk = ready!(Pin::new(&mut this.inner).poll_fill_buf(cx))?;
-            if chunk.is_empty() {
-                this.eof = true;
-                continue;
-            }
-            let len = chunk.len();
-            this.input.extend_from_slice(chunk);
-            Pin::new(&mut this.inner).consume(len);
-        }
+        Pin::new(&mut self.get_mut().0).poll_fill_buf(cx)
     }
 
     fn consume(self: Pin<&mut Self>, amt: usize) {
-        self.get_mut().output_pos += amt;
+        Pin::new(&mut self.get_mut().0).consume(amt)
     }
 }
 
 impl<R: AsyncBufRead + Unpin> AsyncRead for GzipReader<R> {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<io::Result<usize>> {
-        let available = ready!(self.as_mut().poll_fill_buf(cx))?;
-        let len = cmp::min(available.len(), buf.len());
-        buf[..len].copy_from_slice(&available[..len]);
-        self.consume(len);
-        Poll::Ready(Ok(len))
+        Pin::new(&mut self.get_mut().0).poll_read(cx, buf)
     }
 }
 

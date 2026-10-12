@@ -36,6 +36,12 @@ futures-executor = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 url = "2"
 
+[dependencies.async-compression]
+version = "0.4.50"
+optional = true
+default-features = false
+features = ["futures-io", "gzip"]
+
 [dependencies.libflate]
 version = "2"
 optional = true
@@ -47,5 +53,5 @@ features = ["derive"]
 
 [features]
 default = ["gzip"]
-gzip = ["libflate"]
+gzip = ["async-compression", "libflate"]
 with_serde = ["serde"]
