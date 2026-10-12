@@ -47,10 +47,9 @@ Writers must be finished with `close().await`; dropping one without closing may
 lose the file.
 
 GZIP compression stays synchronous and in memory. The writer compresses each
-record as its own GZIP member. `GzipReader` decodes one member at a time and
-buffers it fully, so memory use grows with the largest member. This suits WARC
-files that use one member per record, as the WARC specification recommends and
-Common Crawl does.
+record as its own GZIP member, as the WARC specification recommends and Common
+Crawl does. `GzipReader` decompresses incrementally, so memory use stays bounded
+whether a file uses one member per record or is compressed as a single member.
 
 ## License
 
