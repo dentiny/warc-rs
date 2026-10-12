@@ -3,10 +3,19 @@ use opendal::{FuturesAsyncReader, FuturesAsyncWriter, Operator};
 
 use std::io;
 
+/// Size of each ranged request issued when reading.
+const READ_CHUNK_BYTES: usize = 2 * 1_048_576;
+/// Number of ranged requests kept in flight.
+const READ_CONCURRENCY: usize = 16;
+/// Bytes a reader may have requested ahead of its position.
+pub(crate) const READ_AHEAD_BYTES: u64 = (READ_CHUNK_BYTES * READ_CONCURRENCY) as u64;
+
 /// Opens `path` for reading through OpenDAL's default timeout and retry layers.
 pub(crate) async fn reader(operator: &Operator, path: &str) -> io::Result<FuturesAsyncReader> {
     Ok(with_default_layers(operator)
-        .reader(path)
+        .reader_with(path)
+        .chunk(READ_CHUNK_BYTES)
+        .concurrent(READ_CONCURRENCY)
         .await?
         .into_futures_async_read(..)
         .await?)
