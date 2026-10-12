@@ -39,9 +39,32 @@ impl From<WarcHeader> for String {
     }
 }
 
-impl Display for WarcHeader {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stringified = match self {
+const KNOWN_HEADERS: [WarcHeader; 19] = [
+    WarcHeader::ContentLength,
+    WarcHeader::ContentType,
+    WarcHeader::BlockDigest,
+    WarcHeader::ConcurrentTo,
+    WarcHeader::Date,
+    WarcHeader::Filename,
+    WarcHeader::IdentifiedPayloadType,
+    WarcHeader::IPAddress,
+    WarcHeader::PayloadDigest,
+    WarcHeader::Profile,
+    WarcHeader::RecordID,
+    WarcHeader::RefersTo,
+    WarcHeader::SegmentNumber,
+    WarcHeader::SegmentOriginID,
+    WarcHeader::SegmentTotalLength,
+    WarcHeader::TargetURI,
+    WarcHeader::Truncated,
+    WarcHeader::WarcType,
+    WarcHeader::WarcInfoID,
+];
+
+impl WarcHeader {
+    /// Returns the lowercase header name.
+    pub fn as_str(&self) -> &str {
+        match self {
             WarcHeader::ContentLength => "content-length",
             WarcHeader::ContentType => "content-type",
             WarcHeader::BlockDigest => "warc-block-digest",
@@ -62,35 +85,48 @@ impl Display for WarcHeader {
             WarcHeader::WarcType => "warc-type",
             WarcHeader::WarcInfoID => "warc-warcinfo-id",
             WarcHeader::Unknown(ref string) => string,
-        };
-        write!(f, "{}", stringified)
+        }
+    }
+}
+
+impl Display for WarcHeader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
 impl<S: AsRef<str>> From<S> for WarcHeader {
     fn from(string: S) -> Self {
-        let lower: String = string.as_ref().to_lowercase();
-        match lower.as_str() {
-            "content-length" => WarcHeader::ContentLength,
-            "content-type" => WarcHeader::ContentType,
-            "warc-block-digest" => WarcHeader::BlockDigest,
-            "warc-concurrent-to" => WarcHeader::ConcurrentTo,
-            "warc-date" => WarcHeader::Date,
-            "warc-filename" => WarcHeader::Filename,
-            "warc-identified-payload-type" => WarcHeader::IdentifiedPayloadType,
-            "warc-ip-address" => WarcHeader::IPAddress,
-            "warc-payload-digest" => WarcHeader::PayloadDigest,
-            "warc-profile" => WarcHeader::Profile,
-            "warc-record-id" => WarcHeader::RecordID,
-            "warc-refers-to" => WarcHeader::RefersTo,
-            "warc-segment-number" => WarcHeader::SegmentNumber,
-            "warc-segment-origin-id" => WarcHeader::SegmentOriginID,
-            "warc-segment-total-length" => WarcHeader::SegmentTotalLength,
-            "warc-target-uri" => WarcHeader::TargetURI,
-            "warc-truncated" => WarcHeader::Truncated,
-            "warc-type" => WarcHeader::WarcType,
-            "warc-warcinfo-id" => WarcHeader::WarcInfoID,
-            _ => WarcHeader::Unknown(lower),
+        let string = string.as_ref();
+        KNOWN_HEADERS
+            .iter()
+            .find(|header| header.as_str().eq_ignore_ascii_case(string))
+            .cloned()
+            .unwrap_or_else(|| WarcHeader::Unknown(string.to_lowercase()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{WarcHeader, KNOWN_HEADERS};
+
+    #[test]
+    fn known_headers_round_trip_case_insensitively() {
+        for header in KNOWN_HEADERS.iter() {
+            assert_eq!(&WarcHeader::from(header.as_str()), header);
+            assert_eq!(
+                &WarcHeader::from(header.as_str().to_ascii_uppercase()),
+                header
+            );
         }
+        assert_eq!(WarcHeader::from("WARC-Record-ID"), WarcHeader::RecordID);
+    }
+
+    #[test]
+    fn unknown_headers_are_lowercased() {
+        assert_eq!(
+            WarcHeader::from("X-Custom-Header"),
+            WarcHeader::Unknown("x-custom-header".to_string())
+        );
     }
 }

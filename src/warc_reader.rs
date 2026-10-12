@@ -1,16 +1,16 @@
 use crate::{parser, storage};
-use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody};
+use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody, WarcHeader};
 
 use futures_util::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt};
 use opendal::{FuturesAsyncReader, Operator};
 
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
 
 #[cfg(feature = "gzip")]
 use crate::GzipReader;
 
-const KB: usize = 1_024;
 const MB: usize = 1_048_576;
 /// Upper bound for one record's header block, so corrupt input cannot grow it without limit.
 const MAX_HEADER_BLOCK_BYTES: u64 = 4 * MB as u64;
@@ -53,18 +53,25 @@ async fn read_header_block<R: AsyncBufRead + Unpin>(
 
 /// Reads and parses the next header block, returning it with the declared body length.
 ///
-/// Returns `None` when the input ends cleanly before another record.
+/// `header_buffer` is scratch space reused across records. Returns `None` when the input ends
+/// cleanly before another record.
 async fn read_record_header<R: AsyncBufRead + Unpin>(
     reader: &mut R,
+    header_buffer: &mut Vec<u8>,
 ) -> Option<Result<(RawRecordHeader, u64), Error>> {
-    let mut header_buffer: Vec<u8> = Vec::with_capacity(64 * KB);
-    match read_header_block(reader, &mut header_buffer).await {
+    header_buffer.clear();
+    match read_header_block(reader, header_buffer).await {
         Ok(true) => {}
         Ok(false) => return None,
         Err(e) => return Some(Err(e)),
     }
 
-    let (version, headers, body_len) = match parser::headers(&header_buffer) {
+    let line_count = header_buffer.iter().filter(|&&b| b == b'\n').count();
+    let mut headers = HashMap::with_capacity(line_count);
+    let parsed = parser::headers_with(header_buffer, |token, value| {
+        headers.insert(WarcHeader::from(token), value.to_owned());
+    });
+    let (version, body_len) = match parsed {
         Ok((_, parsed)) => parsed,
         Err(e) => {
             return Some(Err(Error::ParseHeaders(
@@ -74,10 +81,7 @@ async fn read_record_header<R: AsyncBufRead + Unpin>(
     };
     let headers = RawRecordHeader {
         version: version.to_owned(),
-        headers: headers
-            .into_iter()
-            .map(|(token, value)| (token.into(), value.to_owned()))
-            .collect(),
+        headers,
     };
     Some(Ok((headers, body_len as u64)))
 }
@@ -175,19 +179,24 @@ impl WarcReader<GzipReader<FuturesAsyncReader>> {
 /// A stream of raw records read from a reader. See `RawRecord` for more information.
 pub struct RawRecordIter<R> {
     reader: R,
+    header_buffer: Vec<u8>,
 }
 
 impl<R: AsyncBufRead + Unpin> RawRecordIter<R> {
     pub(crate) fn new(reader: R) -> RawRecordIter<R> {
-        RawRecordIter { reader }
+        RawRecordIter {
+            reader,
+            header_buffer: Vec::new(),
+        }
     }
 
     /// Read the next raw record, or `None` once the input ends.
     pub async fn next(&mut self) -> Option<Result<(RawRecordHeader, Vec<u8>), Error>> {
-        let (headers, body_len) = match read_record_header(&mut self.reader).await? {
-            Ok(header) => header,
-            Err(e) => return Some(Err(e)),
-        };
+        let (headers, body_len) =
+            match read_record_header(&mut self.reader, &mut self.header_buffer).await? {
+                Ok(header) => header,
+                Err(e) => return Some(Err(e)),
+            };
         Some(
             read_body(&mut self.reader, body_len)
                 .await
@@ -226,6 +235,7 @@ impl<R: AsyncBufRead + Unpin> RecordIter<R> {
 /// or contain and records of unknown size.
 pub struct StreamingIter<'r, R> {
     reader: &'r mut R,
+    header_buffer: Vec<u8>,
     current_item_size: u64,
     first_record: bool,
 }
@@ -234,6 +244,7 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
     pub(crate) fn new(reader: &mut R) -> StreamingIter<'_, R> {
         StreamingIter {
             reader,
+            header_buffer: Vec::new(),
             current_item_size: 0,
             first_record: true,
         }
@@ -268,10 +279,11 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
             return Some(Err(e));
         }
 
-        let (headers, body_len) = match read_record_header(self.reader).await? {
-            Ok(header) => header,
-            Err(e) => return Some(Err(e)),
-        };
+        let (headers, body_len) =
+            match read_record_header(self.reader, &mut self.header_buffer).await? {
+                Ok(header) => header,
+                Err(e) => return Some(Err(e)),
+            };
         self.current_item_size = body_len;
 
         let record = match Record::<EmptyBody>::try_from(headers) {

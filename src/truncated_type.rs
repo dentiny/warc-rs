@@ -10,28 +10,39 @@ pub enum TruncatedType {
     Unknown(String),
 }
 
-impl Display for TruncatedType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let stringified = match *self {
+const KNOWN_TYPES: [TruncatedType; 4] = [
+    TruncatedType::Length,
+    TruncatedType::Time,
+    TruncatedType::Disconnect,
+    TruncatedType::Unspecified,
+];
+
+impl TruncatedType {
+    /// Returns the lowercase truncation reason.
+    pub fn as_str(&self) -> &str {
+        match *self {
             TruncatedType::Length => "length",
             TruncatedType::Time => "time",
             TruncatedType::Disconnect => "disconnect",
             TruncatedType::Unspecified => "unspecified",
             TruncatedType::Unknown(ref val) => val.as_ref(),
-        };
-        f.write_str(stringified)
+        }
+    }
+}
+
+impl Display for TruncatedType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
 impl<S: AsRef<str>> From<S> for TruncatedType {
     fn from(string: S) -> Self {
-        let lower: String = string.as_ref().to_lowercase();
-        match lower.as_str() {
-            "length" => TruncatedType::Length,
-            "time" => TruncatedType::Time,
-            "disconnect" => TruncatedType::Disconnect,
-            "unspecified" => TruncatedType::Unspecified,
-            _ => TruncatedType::Unknown(lower),
-        }
+        let string = string.as_ref();
+        KNOWN_TYPES
+            .iter()
+            .find(|truncated_type| truncated_type.as_str().eq_ignore_ascii_case(string))
+            .cloned()
+            .unwrap_or_else(|| TruncatedType::Unknown(string.to_lowercase()))
     }
 }
