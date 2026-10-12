@@ -103,7 +103,6 @@ async fn read_record_header<R: AsyncBufRead + Unpin>(
 async fn read_body<R: AsyncBufRead + Unpin>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
     let mut body = Vec::with_capacity(std::cmp::min(len, MAX_BODY_PREALLOCATION) as usize);
     let mut remaining = len;
-    // Copies straight out of the reader's buffer; `read_to_end` zero-fills every extension first.
     while remaining > 0 {
         let chunk = reader.fill_buf().await.map_err(Error::ReadData)?;
         if chunk.is_empty() {
