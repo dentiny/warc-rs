@@ -46,6 +46,11 @@ while let Some(record) = records.next().await {
 Writers must be finished with `close().await`; dropping one without closing may
 lose the file.
 
+`stream_records` lets callers skip record bodies. For uncompressed files opened
+with `from_path`, or readers created with `WarcReader::new_seekable`, skipped
+bodies of 4 MiB or more are seeked past instead of read, so they are not
+downloaded. GZIP streams cannot seek and always read through.
+
 GZIP compression stays synchronous and in memory. The writer compresses each
 record as its own GZIP member, as the WARC specification recommends and Common
 Crawl does. `GzipReader` decompresses incrementally, so memory use stays bounded
