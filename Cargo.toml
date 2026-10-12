@@ -1,12 +1,14 @@
 [package]
-name = "warc"
-version = "0.4.0"
-description = "A Rust library for reading and writing WARC files."
+name = "warc-rs"
+version = "0.1.0"
+description = "Async WARC reader/writer with OpenDAL storage (fork of the warc crate)."
 readme = "README.md"
-repository = "https://github.com/jedireza/warc"
-documentation = "https://docs.rs/crate/warc/"
+repository = "https://github.com/dentiny/warc-rs"
+documentation = "https://docs.rs/warc-rs/"
 license = "MIT"
-authors = ["Reza Akhavan <reza@akhavan.me>"]
+authors = ["dentinyhao <dentinyhao@gmail.com>"]
+categories = ["parser-implementations", "encoding"]
+exclude = ["/target", "/.github"]
 keywords = ["warc", "web", "archive"]
 edition = "2018"
 

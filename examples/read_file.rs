@@ -1,7 +1,7 @@
-use warc::opendal::services::Fs;
-use warc::opendal::Operator;
-use warc::WarcHeader;
-use warc::WarcReader;
+use warc_rs::opendal::services::Fs;
+use warc_rs::opendal::Operator;
+use warc_rs::WarcHeader;
+use warc_rs::WarcReader;
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
