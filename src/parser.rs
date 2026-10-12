@@ -2,7 +2,6 @@ use nom::{
     bytes::streaming::{tag, take, take_while1},
     character::streaming::{line_ending, not_line_ending, space0},
     error::ErrorKind,
-    multi::many1,
     IResult, Parser,
 };
 use std::str;
@@ -62,56 +61,71 @@ fn header(input: &[u8]) -> IResult<&[u8], (&[u8], &[u8])> {
 }
 
 /// Parse a WARC header block.
-// TODO: evaluate the use of `ErrorKind::Verify` here.
 #[allow(clippy::type_complexity)]
 pub fn headers(input: &[u8]) -> IResult<&[u8], (&str, Vec<(&str, &[u8])>, usize)> {
-    let (input, version) = version(input)?;
-    let (input, headers) = many1(header).parse(input)?;
+    let mut warc_headers: Vec<(&str, &[u8])> = Vec::new();
+    let (input, (version, content_length)) =
+        headers_with(input, |token, value| warc_headers.push((token, value)))?;
+    Ok((input, (version, warc_headers, content_length)))
+}
 
+/// Parse a WARC header block, passing each header to `on_header` as it is parsed.
+///
+/// Returns the version and the first Content-Length value, or 0 if there is none.
+// TODO: evaluate the use of `ErrorKind::Verify` here.
+pub(crate) fn headers_with<'a, F>(
+    input: &'a [u8],
+    mut on_header: F,
+) -> IResult<&'a [u8], (&'a str, usize)>
+where
+    F: FnMut(&'a str, &'a [u8]),
+{
+    let (mut input, version) = version(input)?;
     let mut content_length: Option<usize> = None;
-    let mut warc_headers: Vec<(&str, &[u8])> = Vec::with_capacity(headers.len());
+    let mut invalid = false;
+    let mut first = true;
 
-    for header in headers {
-        let token_str = match str::from_utf8(header.0) {
-            Err(_) => {
-                return Err(nom::Err::Error(nom::error::Error::new(
-                    input,
-                    ErrorKind::Verify,
-                )));
-            }
+    loop {
+        let (rest, (token, value)) = match header(input) {
+            Ok(parsed) => parsed,
+            Err(nom::Err::Error(_)) if !first => break,
+            Err(e) => return Err(e),
+        };
+        input = rest;
+        first = false;
+
+        // `is_header_token_char` only admits ASCII, so this always succeeds.
+        let token = match str::from_utf8(token) {
             Ok(token) => token,
+            Err(_) => {
+                invalid = true;
+                continue;
+            }
         };
 
-        if content_length.is_none() && token_str.eq_ignore_ascii_case("content-length") {
-            let value_str = match str::from_utf8(header.1) {
-                Err(_) => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Ok(value) => value,
-            };
-
-            match value_str.parse::<usize>() {
-                Err(_) => {
-                    return Err(nom::Err::Error(nom::error::Error::new(
-                        input,
-                        ErrorKind::Verify,
-                    )));
-                }
-                Ok(len) => {
-                    content_length = Some(len);
-                }
+        if content_length.is_none() && token.eq_ignore_ascii_case("content-length") {
+            match str::from_utf8(value)
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+            {
+                Some(len) => content_length = Some(len),
+                None => invalid = true,
             }
         }
 
-        warc_headers.push((token_str, header.1));
+        on_header(token, value);
+    }
+
+    if invalid {
+        return Err(nom::Err::Error(nom::error::Error::new(
+            input,
+            ErrorKind::Verify,
+        )));
     }
 
     // TODO: Technically if we didn't find a `content-length` header, the record is invalid. Should
     // we be returning an error here instead?
-    Ok((input, (version, warc_headers, content_length.unwrap_or(0))))
+    Ok((input, (version, content_length.unwrap_or(0))))
 }
 
 /// Parse an entire WARC record.
