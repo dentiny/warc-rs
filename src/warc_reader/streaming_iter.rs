@@ -1,6 +1,6 @@
 use super::framing::{read_record_header, read_terminator};
 use super::PollSeek;
-use crate::{storage, EmptyBody, Error, Record, StreamingBody};
+use crate::{EmptyBody, Error, Record, StreamingBody};
 
 use futures_util::future::poll_fn;
 use futures_util::io::{AsyncBufRead, AsyncReadExt};
@@ -12,9 +12,9 @@ use std::pin::Pin;
 
 /// Smallest remaining body that `StreamingIter` skips by seeking rather than reading.
 ///
-/// Seeking a remote reader outside its buffer discards the ranges already in flight and starts new
-/// requests, so skipping less than the read-ahead window costs more than reading through it.
-const SEEK_THRESHOLD: u64 = storage::READ_AHEAD_BYTES;
+/// Seeking a remote reader outside its buffer starts a new request, which costs more than reading
+/// through a small body.
+const SEEK_THRESHOLD: u64 = 4 * 1_048_576;
 
 /// An iterator-like type to "stream" records from a reader.
 ///
@@ -118,8 +118,6 @@ mod tests {
 
     use super::SEEK_THRESHOLD;
     use crate::{EmptyBody, Error, Record, WarcReader, WarcWriter};
-
-    const MB: usize = 1_048_576;
 
     #[test]
     fn only_second_item() {
@@ -404,26 +402,6 @@ mod tests {
         let second = iter.next_item().await.unwrap().unwrap();
         assert_eq!(second.into_buffered().await.unwrap().body(), b"hello");
         assert!(iter.next_item().await.is_none());
-    }
-
-    #[tokio::test]
-    async fn from_path_reads_records_across_chunks() {
-        let operator = Operator::new(Memory::default()).unwrap();
-        let first: Vec<u8> = (0..11 * MB + 7).map(|i| i as u8).collect();
-        let last: Vec<u8> = (0..13 * MB + 11).map(|i| (i * 7) as u8).collect();
-        operator
-            .write("a.warc", warc(&[&first, b"hello", &last]))
-            .await
-            .unwrap();
-        let mut iter = WarcReader::from_path(&operator, "a.warc")
-            .await
-            .unwrap()
-            .iter_records();
-        for expected in [&first[..], b"hello", &last[..]].iter() {
-            let record = iter.next().await.unwrap().unwrap();
-            assert!(record.body() == *expected);
-        }
-        assert!(iter.next().await.is_none());
     }
 
     #[tokio::test]

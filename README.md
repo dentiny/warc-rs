@@ -48,11 +48,13 @@ lose the file.
 
 `stream_records` lets callers skip record bodies. For uncompressed files opened
 with `from_path`, or readers created with `WarcReader::new_seekable`, skipped
-bodies of 32 MiB or more are seeked past instead of read, so they are not
+bodies of 4 MiB or more are seeked past instead of read, so they are not
 downloaded. GZIP streams cannot seek and always read through.
 
-`from_path` and `from_path_gzip` fetch 8 MiB ranges with up to 4 in flight, so
-each reader may buffer about 32 MiB ahead.
+`from_path` and `from_path_gzip` read each file as a single streaming request
+and retry throttled requests with jittered backoff. Rate-limited sources such as
+Common Crawl check every request, so one request per file is far more reliable
+than many ranged chunks. For more throughput, read several files concurrently.
 
 GZIP compression stays synchronous and in memory. The writer compresses each
 record as its own GZIP member, as the WARC specification recommends and Common
