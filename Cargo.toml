@@ -36,11 +36,6 @@ futures-executor = "0.3"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 url = "2"
 
-[[bench]]
-name = "gzip"
-harness = false
-required-features = ["gzip"]
-
 [dependencies.async-compression]
 version = "0.4.50"
 optional = true
