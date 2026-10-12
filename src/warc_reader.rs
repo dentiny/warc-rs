@@ -102,13 +102,16 @@ async fn read_record_header<R: AsyncBufRead + Unpin>(
 /// Reads a body of `len` bytes followed by the record terminator.
 async fn read_body<R: AsyncBufRead + Unpin>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
     let mut body = Vec::with_capacity(std::cmp::min(len, MAX_BODY_PREALLOCATION) as usize);
-    (&mut *reader)
-        .take(len)
-        .read_to_end(&mut body)
-        .await
-        .map_err(Error::ReadData)?;
-    if (body.len() as u64) < len {
-        return Err(Error::UnexpectedEOB);
+    let mut remaining = len;
+    while remaining > 0 {
+        let chunk = reader.fill_buf().await.map_err(Error::ReadData)?;
+        if chunk.is_empty() {
+            return Err(Error::UnexpectedEOB);
+        }
+        let n = std::cmp::min(chunk.len() as u64, remaining) as usize;
+        body.extend_from_slice(&chunk[..n]);
+        reader.consume_unpin(n);
+        remaining -= n as u64;
     }
     read_terminator(reader).await?;
     Ok(body)
@@ -448,6 +451,22 @@ mod iter_raw_tests {
             assert_eq!(headers.as_ref(), &expected_headers);
             assert_eq!(body, expected_body);
         }
+    }
+
+    #[test]
+    fn truncated_body_is_unexpected_eob() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            Content-Length: 10\r\n\
+            \r\n\
+            12345\
+        ";
+
+        let mut reader = WarcReader::new(Cursor::new(&raw[..])).iter_raw_records();
+        assert!(matches!(
+            block_on(reader.next()),
+            Some(Err(crate::Error::UnexpectedEOB))
+        ));
     }
 }
 
