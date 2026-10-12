@@ -1,12 +1,16 @@
 use crate::{parser, storage};
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody, WarcHeader};
 
-use futures_util::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt};
+use futures_util::future::poll_fn;
+use futures_util::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncSeek};
 use opendal::{FuturesAsyncReader, Operator};
 
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::io;
+use std::io::SeekFrom;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 
 #[cfg(feature = "gzip")]
 use crate::GzipReader;
@@ -14,6 +18,14 @@ use crate::GzipReader;
 const MB: usize = 1_048_576;
 /// Upper bound for one record's header block, so corrupt input cannot grow it without limit.
 const MAX_HEADER_BLOCK_BYTES: u64 = 4 * MB as u64;
+/// Smallest remaining body that `StreamingIter` skips by seeking rather than reading.
+///
+/// Seeking a remote reader outside its buffer starts a new ranged request, which costs more than
+/// reading through a small body.
+const SEEK_THRESHOLD: u64 = 4 * MB as u64;
+
+/// The `AsyncSeek::poll_seek` of a seekable reader.
+type PollSeek<R> = fn(Pin<&mut R>, &mut Context<'_>, SeekFrom) -> Poll<io::Result<u64>>;
 
 /// Reads one header block, up to and including the empty line that ends it, into `buffer`.
 ///
@@ -123,12 +135,16 @@ async fn read_terminator<R: AsyncRead + Unpin>(reader: &mut R) -> Result<(), Err
 /// A reader which iteratively parses WARC records from a stream.
 pub struct WarcReader<R> {
     reader: R,
+    seek: Option<PollSeek<R>>,
 }
 
 impl<R: AsyncBufRead + Unpin> WarcReader<R> {
     /// Create a new reader.
     pub fn new(r: R) -> Self {
-        WarcReader { reader: r }
+        WarcReader {
+            reader: r,
+            seek: None,
+        }
     }
 
     /// Create a stream over all of the raw records read.
@@ -150,18 +166,35 @@ impl<R: AsyncBufRead + Unpin> WarcReader<R> {
     /// Create a streaming iterator over all of the records read.
     ///
     /// This will build each record header, and allow the caller to decide whether to read
-    /// the body or not.
+    /// the body or not. For readers created with `new_seekable`, large bodies the caller does
+    /// not read are skipped by seeking.
     pub fn stream_records(&mut self) -> StreamingIter<'_, R> {
-        StreamingIter::new(&mut self.reader)
+        StreamingIter::new(&mut self.reader, self.seek)
+    }
+}
+
+impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
+    /// Create a new reader over a seekable stream.
+    ///
+    /// When `stream_records` moves to the next record, it seeks past the unread part of the
+    /// current body if at least 4 MiB remain, instead of reading and discarding it.
+    pub fn new_seekable(r: R) -> Self {
+        WarcReader {
+            reader: r,
+            seek: Some(R::poll_seek),
+        }
     }
 }
 
 impl WarcReader<FuturesAsyncReader> {
     /// Create a new reader which reads `path` from `operator`.
     ///
-    /// Reads go through OpenDAL's default timeout and retry layers.
+    /// Reads go through OpenDAL's default timeout and retry layers. Large bodies skipped by
+    /// `stream_records` are seeked past rather than downloaded; see `new_seekable`.
     pub async fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
-        Ok(WarcReader::new(storage::reader(operator, path).await?))
+        Ok(WarcReader::new_seekable(
+            storage::reader(operator, path).await?,
+        ))
     }
 }
 
@@ -235,15 +268,17 @@ impl<R: AsyncBufRead + Unpin> RecordIter<R> {
 /// or contain and records of unknown size.
 pub struct StreamingIter<'r, R> {
     reader: &'r mut R,
+    seek: Option<PollSeek<R>>,
     header_buffer: Vec<u8>,
     current_item_size: u64,
     first_record: bool,
 }
 
 impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
-    pub(crate) fn new(reader: &mut R) -> StreamingIter<'_, R> {
+    pub(crate) fn new(reader: &mut R, seek: Option<PollSeek<R>>) -> StreamingIter<'_, R> {
         StreamingIter {
             reader,
+            seek,
             header_buffer: Vec::new(),
             current_item_size: 0,
             first_record: true,
@@ -252,7 +287,21 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
 
     async fn skip_body(&mut self) -> Result<(), Error> {
         let body_bytes_left = self.current_item_size;
-        if body_bytes_left > 0 {
+        let seek_offset = self
+            .seek
+            .filter(|_| body_bytes_left >= SEEK_THRESHOLD)
+            .and_then(|poll_seek| Some((poll_seek, i64::try_from(body_bytes_left).ok()?)));
+
+        if let Some((poll_seek, offset)) = seek_offset {
+            let reader = &mut *self.reader;
+            poll_fn(|cx| poll_seek(Pin::new(&mut *reader), cx, SeekFrom::Current(offset)))
+                .await
+                .map_err(|e| match e.kind() {
+                    // OpenDAL rejects seeking past the end of the file with `InvalidInput`.
+                    io::ErrorKind::InvalidInput => Error::UnexpectedEOB,
+                    _ => Error::ReadData(e),
+                })?;
+        } else if body_bytes_left > 0 {
             let skipped = futures_util::io::copy_buf(
                 (&mut *self.reader).take(body_bytes_left),
                 &mut futures_util::io::sink(),
@@ -659,5 +708,184 @@ mod next_item_tests {
         assert_eq!(record.content_length(), 7);
         assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");
         assert_eq!(record.body(), b"1234567");
+    }
+}
+
+#[cfg(test)]
+mod seek_tests {
+    use futures_executor::block_on;
+    use futures_util::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncSeek, Cursor};
+    use opendal::services::Memory;
+    use opendal::Operator;
+
+    use std::io;
+    use std::io::SeekFrom;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    use super::SEEK_THRESHOLD;
+    use crate::{EmptyBody, Error, Record, WarcReader, WarcWriter};
+
+    /// Counts the bytes consumed from, and the seeks issued to, an in-memory reader.
+    struct CountingReader {
+        inner: Cursor<Vec<u8>>,
+        consumed: u64,
+        seeks: usize,
+    }
+
+    impl CountingReader {
+        fn new(data: Vec<u8>) -> Self {
+            CountingReader {
+                inner: Cursor::new(data),
+                consumed: 0,
+                seeks: 0,
+            }
+        }
+    }
+
+    impl AsyncRead for CountingReader {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut [u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            let n = futures_util::ready!(Pin::new(&mut this.inner).poll_read(cx, buf))?;
+            this.consumed += n as u64;
+            Poll::Ready(Ok(n))
+        }
+    }
+
+    impl AsyncBufRead for CountingReader {
+        fn poll_fill_buf(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<&[u8]>> {
+            Pin::new(&mut self.get_mut().inner).poll_fill_buf(cx)
+        }
+
+        fn consume(self: Pin<&mut Self>, amt: usize) {
+            let this = self.get_mut();
+            this.consumed += amt as u64;
+            Pin::new(&mut this.inner).consume(amt);
+        }
+    }
+
+    impl AsyncSeek for CountingReader {
+        fn poll_seek(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            pos: SeekFrom,
+        ) -> Poll<io::Result<u64>> {
+            let this = self.get_mut();
+            this.seeks += 1;
+            Pin::new(&mut this.inner).poll_seek(cx, pos)
+        }
+    }
+
+    fn large_body() -> Vec<u8> {
+        vec![b'x'; 2 * SEEK_THRESHOLD as usize]
+    }
+
+    fn warc(bodies: &[&[u8]]) -> Vec<u8> {
+        let mut writer = WarcWriter::new(Vec::new());
+        for body in bodies {
+            let record = Record::<EmptyBody>::default().add_body(body.to_vec());
+            block_on(writer.write(&record)).unwrap();
+        }
+        writer.into_inner()
+    }
+
+    fn skip_first_read_second<R: AsyncBufRead + Unpin>(reader: &mut WarcReader<R>) -> Vec<u8> {
+        block_on(async {
+            let mut iter = reader.stream_records();
+            iter.next_item().await.unwrap().unwrap();
+            let second = iter.next_item().await.unwrap().unwrap();
+            second.into_buffered().await.unwrap().body().to_vec()
+        })
+    }
+
+    #[test]
+    fn seeks_past_large_unread_body() {
+        let data = warc(&[&large_body(), b"hello"]);
+        let mut reader = WarcReader::new_seekable(CountingReader::new(data));
+        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(reader.reader.seeks, 1);
+        assert!(reader.reader.consumed < SEEK_THRESHOLD);
+    }
+
+    #[test]
+    fn reads_through_small_body() {
+        let data = warc(&[&[b'x'; 1_024], b"hello"]);
+        let mut reader = WarcReader::new_seekable(CountingReader::new(data));
+        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(reader.reader.seeks, 0);
+    }
+
+    #[test]
+    fn new_never_seeks() {
+        let data = warc(&[&large_body(), b"hello"]);
+        let mut reader = WarcReader::new(CountingReader::new(data));
+        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(reader.reader.seeks, 0);
+        assert!(reader.reader.consumed > 2 * SEEK_THRESHOLD);
+    }
+
+    #[test]
+    fn seeks_past_rest_of_partially_read_body() {
+        let data = warc(&[&large_body(), b"hello"]);
+        let mut reader = WarcReader::new_seekable(CountingReader::new(data));
+        block_on(async {
+            let mut iter = reader.stream_records();
+            let mut first = iter.next_item().await.unwrap().unwrap();
+            let mut prefix = [0; 100];
+            first.read_exact(&mut prefix).await.unwrap();
+            assert_eq!(prefix, [b'x'; 100]);
+            let second = iter.next_item().await.unwrap().unwrap();
+            assert_eq!(second.into_buffered().await.unwrap().body(), b"hello");
+        });
+        assert_eq!(reader.reader.seeks, 1);
+    }
+
+    #[test]
+    fn seek_past_truncated_body_is_unexpected_eob() {
+        let mut data = warc(&[&large_body()]);
+        data.truncate(data.len() - SEEK_THRESHOLD as usize);
+        let mut reader = WarcReader::new_seekable(CountingReader::new(data));
+        block_on(async {
+            let mut iter = reader.stream_records();
+            iter.next_item().await.unwrap().unwrap();
+            assert!(matches!(
+                iter.next_item().await,
+                Some(Err(Error::UnexpectedEOB))
+            ));
+        });
+    }
+
+    #[tokio::test]
+    async fn from_path_seeks_past_large_bodies() {
+        let operator = Operator::new(Memory::default()).unwrap();
+        operator
+            .write("a.warc", warc(&[&large_body(), b"hello"]))
+            .await
+            .unwrap();
+        let mut reader = WarcReader::from_path(&operator, "a.warc").await.unwrap();
+        let mut iter = reader.stream_records();
+        iter.next_item().await.unwrap().unwrap();
+        let second = iter.next_item().await.unwrap().unwrap();
+        assert_eq!(second.into_buffered().await.unwrap().body(), b"hello");
+        assert!(iter.next_item().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn from_path_truncated_body_is_unexpected_eob() {
+        let operator = Operator::new(Memory::default()).unwrap();
+        let mut data = warc(&[&large_body()]);
+        data.truncate(data.len() - SEEK_THRESHOLD as usize);
+        operator.write("a.warc", data).await.unwrap();
+        let mut reader = WarcReader::from_path(&operator, "a.warc").await.unwrap();
+        let mut iter = reader.stream_records();
+        iter.next_item().await.unwrap().unwrap();
+        assert!(matches!(
+            iter.next_item().await,
+            Some(Err(Error::UnexpectedEOB))
+        ));
     }
 }
