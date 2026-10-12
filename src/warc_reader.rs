@@ -21,9 +21,9 @@ const MB: usize = 1_048_576;
 const MAX_HEADER_BLOCK_BYTES: u64 = 4 * MB as u64;
 /// Smallest remaining body that `StreamingIter` skips by seeking rather than reading.
 ///
-/// Seeking a remote reader outside its buffer starts a new ranged request, which costs more than
-/// reading through a small body.
-const SEEK_THRESHOLD: u64 = 4 * MB as u64;
+/// Seeking a remote reader outside its buffer discards the ranges already in flight and starts new
+/// requests, so skipping less than the read-ahead window costs more than reading through it.
+const SEEK_THRESHOLD: u64 = storage::READ_AHEAD_BYTES;
 
 /// The `AsyncSeek::poll_seek` of a seekable reader.
 type PollSeek<R> = fn(Pin<&mut R>, &mut Context<'_>, SeekFrom) -> Poll<io::Result<u64>>;
@@ -181,7 +181,7 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
     /// Create a new reader over a seekable stream.
     ///
     /// When `stream_records` moves to the next record, it seeks past the unread part of the
-    /// current body if at least 4 MiB remain, instead of reading and discarding it.
+    /// current body if at least 32 MiB remain, instead of reading and discarding it.
     pub fn new_seekable(r: R) -> Self {
         WarcReader {
             reader: r,
@@ -193,7 +193,8 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
 impl WarcReader<FuturesAsyncReader> {
     /// Create a new reader which reads `path` from `operator`.
     ///
-    /// Reads go through OpenDAL's default timeout and retry layers. Large bodies skipped by
+    /// Reads go through OpenDAL's default timeout and retry layers, and fetch 2 MiB ranges with up
+    /// to 16 in flight, so each reader may buffer about 32 MiB ahead. Large bodies skipped by
     /// `stream_records` are seeked past rather than downloaded; see `new_seekable`.
     pub async fn from_path(operator: &Operator, path: &str) -> io::Result<Self> {
         Ok(WarcReader::new_seekable(
@@ -782,7 +783,7 @@ mod seek_tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use super::SEEK_THRESHOLD;
+    use super::{MB, SEEK_THRESHOLD};
     use crate::{EmptyBody, Error, Record, WarcReader, WarcWriter};
 
     /// Counts the bytes consumed from, and the seeks issued to, an in-memory reader.
@@ -931,6 +932,26 @@ mod seek_tests {
         let second = iter.next_item().await.unwrap().unwrap();
         assert_eq!(second.into_buffered().await.unwrap().body(), b"hello");
         assert!(iter.next_item().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn from_path_reads_records_across_chunks() {
+        let operator = Operator::new(Memory::default()).unwrap();
+        let first: Vec<u8> = (0..3 * MB + 7).map(|i| i as u8).collect();
+        let last: Vec<u8> = (0..5 * MB + 11).map(|i| (i * 7) as u8).collect();
+        operator
+            .write("a.warc", warc(&[&first, b"hello", &last]))
+            .await
+            .unwrap();
+        let mut iter = WarcReader::from_path(&operator, "a.warc")
+            .await
+            .unwrap()
+            .iter_records();
+        for expected in [&first[..], b"hello", &last[..]].iter() {
+            let record = iter.next().await.unwrap().unwrap();
+            assert!(record.body() == *expected);
+        }
+        assert!(iter.next().await.is_none());
     }
 
     #[tokio::test]
