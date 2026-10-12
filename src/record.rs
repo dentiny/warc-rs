@@ -107,53 +107,30 @@ impl AsMut<HashMap<WarcHeader, Vec<u8>>> for RawRecordHeader {
     }
 }
 
+/// Removes a required header, failing if it is absent.
+fn take_header(headers: &mut RawRecordHeader, header: WarcHeader) -> Result<Vec<u8>, WarcError> {
+    headers
+        .as_mut()
+        .remove(&header)
+        .ok_or(WarcError::MissingHeader(header))
+}
+
+/// Removes a required header as a string, failing if it is absent or not UTF-8.
+fn take_utf8(headers: &mut RawRecordHeader, header: WarcHeader) -> Result<String, WarcError> {
+    let value = take_header(headers, header.clone())?;
+    String::from_utf8(value)
+        .map_err(|_| WarcError::MalformedHeader(header, "not a UTF-8 string".to_string()))
+}
+
 impl std::convert::TryFrom<RawRecordHeader> for Record<EmptyBody> {
     type Error = WarcError;
     fn try_from(mut headers: RawRecordHeader) -> Result<Self, WarcError> {
-        headers
-            .as_mut()
-            .remove(&WarcHeader::ContentLength)
-            .ok_or(WarcError::MissingHeader(WarcHeader::ContentLength))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
-                })
-            })?;
-
-        let record_type = headers
-            .as_mut()
-            .remove(&WarcHeader::WarcType)
-            .ok_or(WarcError::MissingHeader(WarcHeader::WarcType))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(
-                        WarcHeader::WarcType,
-                        "not a UTF-8 string".to_string(),
-                    )
-                })
-            })
-            .map(|rtype| rtype.into())?;
-
-        let record_id = headers
-            .as_mut()
-            .remove(&WarcHeader::RecordID)
-            .ok_or(WarcError::MissingHeader(WarcHeader::RecordID))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
-                })
-            })?;
-
-        let record_date = headers
-            .as_mut()
-            .remove(&WarcHeader::Date)
-            .ok_or(WarcError::MissingHeader(WarcHeader::Date))
-            .and_then(|vec| {
-                String::from_utf8(vec).map_err(|_| {
-                    WarcError::MalformedHeader(WarcHeader::Date, "not a UTF-8 string".to_string())
-                })
-            })
-            .and_then(|date| Record::<BufferedBody>::parse_record_date(&date))?;
+        // The body determines the content length, so the value only has to be present.
+        take_header(&mut headers, WarcHeader::ContentLength)?;
+        let record_type = RecordType::from(take_utf8(&mut headers, WarcHeader::WarcType)?);
+        let record_id = take_utf8(&mut headers, WarcHeader::RecordID)?;
+        let record_date =
+            Record::<BufferedBody>::parse_record_date(&take_utf8(&mut headers, WarcHeader::Date)?)?;
 
         let truncated_type = headers
             .as_mut()
@@ -921,7 +898,7 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, RawRecordHeader, Record, RecordType, TruncatedType};
+    use crate::{EmptyBody, Error, RawRecordHeader, Record, RecordType, TruncatedType};
 
     use std::collections::HashMap;
     use std::convert::TryFrom;
@@ -969,6 +946,47 @@ mod raw_tests {
         };
 
         assert!(Record::<EmptyBody>::try_from(headers).is_ok());
+    }
+
+    fn valid_headers() -> RawRecordHeader {
+        RawRecordHeader {
+            version: "1.0".to_owned(),
+            headers: vec![
+                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::ContentLength, b"5".to_vec()),
+                (WarcHeader::RecordID, b"<urn:test:record-0>".to_vec()),
+                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
+            ]
+            .into_iter()
+            .collect(),
+        }
+    }
+
+    #[test]
+    fn verify_non_utf8_reports_its_header() {
+        for header in [WarcHeader::WarcType, WarcHeader::RecordID, WarcHeader::Date] {
+            let mut headers = valid_headers();
+            headers.as_mut().insert(header.clone(), vec![0xff, 0xfe]);
+            match Record::<EmptyBody>::try_from(headers) {
+                Err(Error::MalformedHeader(reported, _)) => assert_eq!(reported, header),
+                other => panic!("expected MalformedHeader({}), got {:?}", header, other),
+            }
+        }
+    }
+
+    #[test]
+    fn verify_content_length_value_is_not_reparsed() {
+        let mut headers = valid_headers();
+        headers
+            .as_mut()
+            .insert(WarcHeader::ContentLength, vec![0xff, 0xfe]);
+        let record = Record::<EmptyBody>::try_from(headers).unwrap();
+        assert_eq!(record.content_length(), 0);
+        assert!(record
+            .headers
+            .as_ref()
+            .get(&WarcHeader::ContentLength)
+            .is_none());
     }
 
     #[test]
