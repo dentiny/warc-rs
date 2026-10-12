@@ -14,7 +14,7 @@ use crate::truncated_type::TruncatedType;
 use crate::Error as WarcError;
 
 /// Content-Length comes from untrusted input, so it only seeds the buffer up to this size.
-const MAX_BODY_PREALLOCATION: u64 = 16 * 1_048_576;
+pub(crate) const MAX_BODY_PREALLOCATION: u64 = 16 * 1_048_576;
 
 use streaming_trait::BodyKind;
 pub use streaming_trait::{BufferedBody, EmptyBody, StreamingBody};

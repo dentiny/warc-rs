@@ -1,3 +1,4 @@
+use crate::record::MAX_BODY_PREALLOCATION;
 use crate::{parser, storage};
 use crate::{BufferedBody, EmptyBody, Error, RawRecordHeader, Record, StreamingBody, WarcHeader};
 
@@ -100,7 +101,7 @@ async fn read_record_header<R: AsyncBufRead + Unpin>(
 
 /// Reads a body of `len` bytes followed by the record terminator.
 async fn read_body<R: AsyncBufRead + Unpin>(reader: &mut R, len: u64) -> Result<Vec<u8>, Error> {
-    let mut body = Vec::with_capacity(std::cmp::min(len, MB as u64) as usize);
+    let mut body = Vec::with_capacity(std::cmp::min(len, MAX_BODY_PREALLOCATION) as usize);
     (&mut *reader)
         .take(len)
         .read_to_end(&mut body)
@@ -271,7 +272,8 @@ pub struct StreamingIter<'r, R> {
     seek: Option<PollSeek<R>>,
     header_buffer: Vec<u8>,
     current_item_size: u64,
-    first_record: bool,
+    /// Whether the previous record's body and terminator have yet to be consumed.
+    in_record: bool,
 }
 
 impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
@@ -281,12 +283,12 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
             seek,
             header_buffer: Vec::new(),
             current_item_size: 0,
-            first_record: true,
+            in_record: false,
         }
     }
 
     async fn skip_body(&mut self) -> Result<(), Error> {
-        let body_bytes_left = self.current_item_size;
+        let body_bytes_left = std::mem::take(&mut self.current_item_size);
         let seek_offset = self
             .seek
             .filter(|_| body_bytes_left >= SEEK_THRESHOLD)
@@ -322,10 +324,10 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
     /// * `Some(Err)` indicates there was a read error.
     /// * `None` indicates no more records are returned.
     pub async fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
-        if self.first_record {
-            self.first_record = false;
-        } else if let Err(e) = self.skip_body().await {
-            return Some(Err(e));
+        if std::mem::take(&mut self.in_record) {
+            if let Err(e) = self.skip_body().await {
+                return Some(Err(e));
+            }
         }
 
         let (headers, body_len) =
@@ -334,6 +336,7 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
                 Err(e) => return Some(Err(e)),
             };
         self.current_item_size = body_len;
+        self.in_record = true;
 
         let record = match Record::<EmptyBody>::try_from(headers) {
             Ok(record) => record,
@@ -638,6 +641,45 @@ mod next_item_tests {
                 assert_eq!(record.warc_id(), *id);
                 assert_eq!(record.body(), *body);
             }
+        });
+    }
+
+    #[test]
+    fn bad_terminator_does_not_skip_body_twice() {
+        let raw = b"\
+            WARC/1.0\r\n\
+            Warc-Type: dunno\r\n\
+            Content-Length: 5\r\n\
+            WARC-Record-Id: <urn:test:bad-terminator:record-0>\r\n\
+            WARC-Date: 2020-07-08T02:52:55Z\r\n\
+            \r\n\
+            12345XXXX\
+            WARC/1.0\r\n\
+            Warc-Type: another\r\n\
+            WARC-Record-Id: <urn:test:bad-terminator:record-1>\r\n\
+            WARC-Date: 2020-07-08T02:52:56Z\r\n\
+            Content-Length: 6\r\n\
+            \r\n\
+            123456\r\n\
+            \r\n\
+        ";
+
+        block_on(async {
+            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+            let mut stream_iter = reader.stream_records();
+
+            stream_iter.next_item().await.unwrap().unwrap();
+            assert!(stream_iter.next_item().await.unwrap().is_err());
+            let record = stream_iter
+                .next_item()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_buffered()
+                .await
+                .unwrap();
+            assert_eq!(record.warc_id(), "<urn:test:bad-terminator:record-1>");
+            assert_eq!(record.body(), b"123456");
         });
     }
 
