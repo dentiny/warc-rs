@@ -22,18 +22,18 @@ forks are not picked up automatically.
 
 ```toml
 [dependencies]
-warc = { git = "https://github.com/dentiny/warc-rs" }
+warc-rs = "0.1"
 ```
 
 IO is async. `WarcReader::new` and `WarcWriter::new` accept any
 `futures::io::AsyncBufRead` or `AsyncWrite`. `from_path` and `from_path_gzip`
 open files through an [OpenDAL](https://opendal.apache.org) `Operator`
-(re-exported as `warc::opendal`) with its default timeout and retry layers. The
+(re-exported as `warc_rs::opendal`) with its default timeout and retry layers. The
 memory, local filesystem, and S3 services are enabled.
 
 ```rust
-use warc::opendal::{services::Fs, Operator};
-use warc::WarcReader;
+use warc_rs::opendal::{services::Fs, Operator};
+use warc_rs::WarcReader;
 
 let operator = Operator::new(Fs::default().root("/data"))?;
 let reader = WarcReader::from_path_gzip(&operator, "crawl.warc.gz").await?;

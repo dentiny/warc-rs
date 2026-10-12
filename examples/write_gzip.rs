@@ -1,9 +1,9 @@
-use warc::opendal::services::Fs;
-use warc::opendal::Operator;
+use warc_rs::opendal::services::Fs;
+use warc_rs::opendal::Operator;
 use chrono::prelude::*;
 
-use warc::WarcHeader;
-use warc::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
+use warc_rs::WarcHeader;
+use warc_rs::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
 
 #[tokio::main]
 async fn main() -> Result<(), std::io::Error> {
