@@ -82,8 +82,8 @@ where
 {
     let (mut input, version) = version(input)?;
     let mut content_length: Option<usize> = None;
-    let mut invalid = false;
     let mut first = true;
+    let verify_error = |input| nom::Err::Error(nom::error::Error::new(input, ErrorKind::Verify));
 
     loop {
         let (rest, (token, value)) = match header(input) {
@@ -91,36 +91,21 @@ where
             Err(nom::Err::Error(_)) if !first => break,
             Err(e) => return Err(e),
         };
-        input = rest;
         first = false;
 
         // `is_header_token_char` only admits ASCII, so this always succeeds.
-        let token = match str::from_utf8(token) {
-            Ok(token) => token,
-            Err(_) => {
-                invalid = true;
-                continue;
-            }
-        };
+        let token = str::from_utf8(token).map_err(|_| verify_error(input))?;
 
         if content_length.is_none() && token.eq_ignore_ascii_case("content-length") {
-            match str::from_utf8(value)
+            let len = str::from_utf8(value)
                 .ok()
                 .and_then(|v| v.parse::<usize>().ok())
-            {
-                Some(len) => content_length = Some(len),
-                None => invalid = true,
-            }
+                .ok_or_else(|| verify_error(input))?;
+            content_length = Some(len);
         }
 
         on_header(token, value);
-    }
-
-    if invalid {
-        return Err(nom::Err::Error(nom::error::Error::new(
-            input,
-            ErrorKind::Verify,
-        )));
+        input = rest;
     }
 
     // TODO: Technically if we didn't find a `content-length` header, the record is invalid. Should
@@ -190,7 +175,7 @@ mod tests {
         assert_eq!(
             headers(&raw_invalid[..]),
             Err(Err::Error(nom::error::Error::new(
-                &b"\r\n"[..],
+                &b"content-length: R2D2\r\nthat: is not\r\na-valid: content-length\r\n\r\n"[..],
                 ErrorKind::Verify
             )))
         );
