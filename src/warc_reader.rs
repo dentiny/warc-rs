@@ -339,11 +339,9 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
             Ok(record) => record,
             Err(e) => return Some(Err(e)),
         };
-        Some(
-            record
-                .add_fixed_stream(self.reader, &mut self.current_item_size)
-                .map_err(Error::ReadData),
-        )
+        Some(Ok(
+            record.add_fixed_stream(self.reader, &mut self.current_item_size)
+        ))
     }
 }
 
