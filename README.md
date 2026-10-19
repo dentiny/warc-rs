@@ -61,6 +61,12 @@ record as its own GZIP member, as the WARC specification recommends and Common
 Crawl does. `GzipReader` decompresses incrementally, so memory use stays bounded
 whether a file uses one member per record or is compressed as a single member.
 
+## Workspace development
+
+The workspace currently contains `warc-io`.
+See [MILESTONES.md](MILESTONES.md) for the sequence of focused PRs and acceptance criteria.
+Run `cargo test --workspace --lib --tests` to test the current stage.
+
 ## License
 
 MIT. See [LICENSE](LICENSE). The original copyright of the upstream project is

@@ -1,0 +1,18 @@
+[package]
+name = "warc-io"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Reopenable streaming WARC inputs through OpenDAL"
+repository = "https://github.com/dentiny/warc-rs"
+
+[dependencies]
+warc-rs = { version = "0.1.0", path = "../.." }
+futures-util = { version = "0.3", features = ["io"] }
+opendal = { version = "0.59.3", default-features = false, features = [] }
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+tempfile = "3"
