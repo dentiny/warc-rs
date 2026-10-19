@@ -1,0 +1,21 @@
+name: WARC workspace
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - run: cargo test --workspace --lib --tests
+      - run: cargo fmt -p warc-io -- --check
+      - run: cargo clippy -p warc-io --all-targets -- -D warnings
