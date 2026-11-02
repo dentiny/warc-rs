@@ -1,6 +1,6 @@
 [package]
 name = "warc-rs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Async WARC reader/writer with OpenDAL storage (fork of the warc crate)."
 readme = "README.md"
 repository = "https://github.com/dentiny/warc-rs"
@@ -61,3 +61,15 @@ features = ["derive"]
 default = ["gzip"]
 gzip = ["async-compression", "flate2", "libflate"]
 with_serde = ["serde"]
+
+[[example]]
+name = "read_filtered"
+required-features = ["gzip"]
+
+[[example]]
+name = "read_gzip"
+required-features = ["gzip"]
+
+[[example]]
+name = "write_gzip"
+required-features = ["gzip"]

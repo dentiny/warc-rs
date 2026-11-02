@@ -22,7 +22,7 @@ forks are not picked up automatically.
 
 ```toml
 [dependencies]
-warc-rs = "0.1"
+warc-rs = "0.2"
 ```
 
 IO is async. `WarcReader::new` and `WarcWriter::new` accept any
