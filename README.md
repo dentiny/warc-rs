@@ -66,14 +66,34 @@ whether a file uses one member per record or is compressed as a single member.
 MIT. See [LICENSE](LICENSE). The original copyright of the upstream project is
 retained.
 
-## Parser without storage
+## Cargo features
 
-The default `storage` feature enables OpenDAL constructors and the OpenDAL
-re-export. Disable default features to use `WarcReader::new` and `WarcWriter::new`
-with caller-owned asynchronous streams, without depending on OpenDAL:
+| Feature | Enabled by default | API |
+| --- | --- | --- |
+| `default` | Yes | Enables `gzip` and `storage`. |
+| `storage` | Via `default` | OpenDAL dependency/re-export and reader/writer `from_path` constructors. |
+| `gzip` | Via `default` | Streaming GZIP decoding and GZIP writers; path constructors additionally require `storage`. |
+| `with_serde` | No | Serde serialization/deserialization for `WarcHeader`. |
+
+Disable default features to use `WarcReader::new` and `WarcWriter::new` with
+caller-owned asynchronous streams, without OpenDAL or GZIP dependencies:
 
 ```toml
 warc-rs = { version = "0.2", default-features = false }
 ```
 
-The `gzip` feature can also be enabled independently of `storage`.
+GZIP without OpenDAL:
+
+```toml
+warc-rs = { version = "0.2", default-features = false, features = ["gzip"] }
+```
+
+Parser and Serde support without storage or GZIP:
+
+```toml
+warc-rs = { version = "0.2", default-features = false, features = ["with_serde"] }
+```
+
+Omitting `default-features = false` retains both default features; additional
+features are additive. The optional-storage feature is available from this Git
+revision pending the next crate release.
