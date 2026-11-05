@@ -22,7 +22,7 @@ forks are not picked up automatically.
 
 ```toml
 [dependencies]
-warc-rs = "0.2"
+warc-rs = "0.3"
 ```
 
 IO is async. `WarcReader::new` and `WarcWriter::new` accept any
@@ -79,7 +79,7 @@ Disable default features to use `WarcReader::new` and `WarcWriter::new` with
 caller-owned asynchronous streams, without OpenDAL or GZIP dependencies:
 
 ```toml
-warc-rs = { version = "0.2", default-features = false }
+warc-rs = { version = "0.3", default-features = false }
 ```
 
 Default builds keep their existing behavior. Previously, even
@@ -87,24 +87,24 @@ Default builds keep their existing behavior. Previously, even
 with defaults disabled must now explicitly enable `storage`:
 
 ```toml
-warc-rs = { version = "0.2", default-features = false, features = ["storage"] }
+warc-rs = { version = "0.3", default-features = false, features = ["storage"] }
 ```
 
-This changes the API/dependency set for existing no-default storage callers and
-must be accounted for when releasing this feature split.
+This changes the API/dependency set for existing no-default storage callers,
+which is why the feature split is released as 0.3.0 rather than a 0.2.x patch.
 
 GZIP without OpenDAL:
 
 ```toml
-warc-rs = { version = "0.2", default-features = false, features = ["gzip"] }
+warc-rs = { version = "0.3", default-features = false, features = ["gzip"] }
 ```
 
 Parser and Serde support without storage or GZIP:
 
 ```toml
-warc-rs = { version = "0.2", default-features = false, features = ["with_serde"] }
+warc-rs = { version = "0.3", default-features = false, features = ["with_serde"] }
 ```
 
 Omitting `default-features = false` retains both default features; additional
-features are additive. The optional-storage feature is available from this Git
-revision pending the next crate release.
+features are additive. The optional-storage feature split is available starting
+in version 0.3.0.
