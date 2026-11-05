@@ -65,3 +65,15 @@ whether a file uses one member per record or is compressed as a single member.
 
 MIT. See [LICENSE](LICENSE). The original copyright of the upstream project is
 retained.
+
+## Parser without storage
+
+The default `storage` feature enables OpenDAL constructors and the OpenDAL
+re-export. Disable default features to use `WarcReader::new` and `WarcWriter::new`
+with caller-owned asynchronous streams, without depending on OpenDAL:
+
+```toml
+warc-rs = { version = "0.2", default-features = false }
+```
+
+The `gzip` feature can also be enabled independently of `storage`.

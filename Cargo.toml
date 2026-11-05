@@ -19,6 +19,7 @@ nom = "8.0.0"
 uuid = { version = "1.27.0", features = ["v4"] }
 
 [dependencies.opendal]
+optional = true
 version = "0.59.3"
 default-features = false
 features = [
@@ -58,18 +59,35 @@ optional = true
 features = ["derive"]
 
 [features]
-default = ["gzip"]
+default = ["gzip", "storage"]
+storage = ["dep:opendal"]
 gzip = ["async-compression", "flate2", "libflate"]
 with_serde = ["serde"]
 
 [[example]]
 name = "read_filtered"
-required-features = ["gzip"]
+required-features = ["gzip", "storage"]
 
 [[example]]
 name = "read_gzip"
-required-features = ["gzip"]
+required-features = ["gzip", "storage"]
 
 [[example]]
 name = "write_gzip"
-required-features = ["gzip"]
+required-features = ["gzip", "storage"]
+
+[[example]]
+name = "read_file"
+required-features = ["storage"]
+
+[[example]]
+name = "read_raw"
+required-features = ["storage"]
+
+[[example]]
+name = "write_file"
+required-features = ["storage"]
+
+[[example]]
+name = "write_raw"
+required-features = ["storage"]

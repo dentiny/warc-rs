@@ -5,9 +5,11 @@ mod streaming_iter;
 pub use record_iter::{RawRecordIter, RecordIter};
 pub use streaming_iter::StreamingIter;
 
+#[cfg(feature = "storage")]
 use crate::storage;
 
 use futures_util::io::{AsyncBufRead, AsyncSeek};
+#[cfg(feature = "storage")]
 use opendal::{FuturesAsyncReader, Operator};
 
 use std::io;
@@ -15,7 +17,7 @@ use std::io::SeekFrom;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-#[cfg(feature = "gzip")]
+#[cfg(all(feature = "gzip", feature = "storage"))]
 use crate::GzipReader;
 
 /// The `AsyncSeek::poll_seek` of a seekable reader.
@@ -75,6 +77,7 @@ impl<R: AsyncBufRead + AsyncSeek + Unpin> WarcReader<R> {
     }
 }
 
+#[cfg(feature = "storage")]
 impl WarcReader<FuturesAsyncReader> {
     /// Create a new reader which reads `path` from `operator`.
     ///
@@ -91,7 +94,7 @@ impl WarcReader<FuturesAsyncReader> {
     }
 }
 
-#[cfg(feature = "gzip")]
+#[cfg(all(feature = "gzip", feature = "storage"))]
 impl WarcReader<GzipReader<FuturesAsyncReader>> {
     /// Create a new reader which reads a GZIP-compressed `path` from `operator`.
     ///

@@ -1,7 +1,9 @@
+#[cfg(feature = "storage")]
 use crate::storage;
 use crate::{BufferedBody, RawRecordHeader, Record};
 
 use futures_util::io::{AsyncWrite, AsyncWriteExt};
+#[cfg(feature = "storage")]
 use opendal::{FuturesAsyncWriter, Operator};
 
 use std::io;
@@ -106,6 +108,7 @@ impl<W: AsyncWrite + Unpin> WarcWriter<W> {
     }
 }
 
+#[cfg(feature = "storage")]
 impl WarcWriter<FuturesAsyncWriter> {
     /// Create a new writer which writes `path` through `operator`, replacing any existing file.
     ///
@@ -127,16 +130,21 @@ impl WarcWriter<FuturesAsyncWriter> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        BufferedBody, EmptyBody, Record, RecordBuilder, RecordType, TruncatedType, WarcHeader,
-        WarcReader, WarcWriter,
-    };
+    use crate::{RecordBuilder, RecordType, TruncatedType, WarcHeader, WarcReader, WarcWriter};
+
+    #[cfg(feature = "storage")]
+    use crate::{BufferedBody, EmptyBody, Record};
 
     use futures_executor::block_on;
-    use futures_util::io::{AsyncBufRead, Cursor};
+    #[cfg(feature = "storage")]
+    use futures_util::io::AsyncBufRead;
+    use futures_util::io::Cursor;
+    #[cfg(feature = "storage")]
     use opendal::services::Memory;
+    #[cfg(feature = "storage")]
     use opendal::Operator;
 
+    #[cfg(feature = "storage")]
     async fn assert_reads_back<R: AsyncBufRead + Unpin>(
         reader: WarcReader<R>,
         expected: &[Record<BufferedBody>],
@@ -150,6 +158,7 @@ mod tests {
         assert!(records.next().await.is_none());
     }
 
+    #[cfg(feature = "storage")]
     #[tokio::test]
     async fn round_trips_through_operator() {
         let operator = Operator::new(Memory::default()).unwrap();
