@@ -109,7 +109,9 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
 mod tests {
     use futures_executor::block_on;
     use futures_util::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncSeek, Cursor};
+    #[cfg(feature = "storage")]
     use opendal::services::Memory;
+    #[cfg(feature = "storage")]
     use opendal::Operator;
 
     use std::io;
@@ -390,6 +392,7 @@ mod tests {
         });
     }
 
+    #[cfg(feature = "storage")]
     #[tokio::test]
     async fn from_path_seeks_past_large_bodies() {
         let operator = Operator::new(Memory::default()).unwrap();
@@ -405,6 +408,7 @@ mod tests {
         assert!(iter.next_item().await.is_none());
     }
 
+    #[cfg(feature = "storage")]
     #[tokio::test]
     async fn from_path_truncated_body_is_unexpected_eob() {
         let operator = Operator::new(Memory::default()).unwrap();
