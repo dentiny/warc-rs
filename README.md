@@ -82,6 +82,17 @@ caller-owned asynchronous streams, without OpenDAL or GZIP dependencies:
 warc-rs = { version = "0.2", default-features = false }
 ```
 
+Default builds keep their existing behavior. Previously, even
+`default-features = false` still enabled OpenDAL. Callers using path constructors
+with defaults disabled must now explicitly enable `storage`:
+
+```toml
+warc-rs = { version = "0.2", default-features = false, features = ["storage"] }
+```
+
+This changes the API/dependency set for existing no-default storage callers and
+must be accounted for when releasing this feature split.
+
 GZIP without OpenDAL:
 
 ```toml
