@@ -43,12 +43,6 @@ optional = true
 default-features = false
 features = ["futures-io", "gzip"]
 
-[dependencies.flate2]
-version = "1.1"
-optional = true
-default-features = false
-features = ["zlib-rs"]
-
 [dependencies.libflate]
 version = "2"
 optional = true
@@ -61,7 +55,7 @@ features = ["derive"]
 [features]
 default = ["gzip", "storage"]
 storage = ["dep:opendal"]
-gzip = ["async-compression", "flate2", "libflate"]
+gzip = ["async-compression", "libflate"]
 with_serde = ["serde"]
 
 [[example]]
