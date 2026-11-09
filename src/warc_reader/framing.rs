@@ -18,6 +18,19 @@ async fn read_header_block<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
 ) -> Result<bool, Error> {
+    // Most headers fit in the current input buffer. Copy their complete block
+    // once, avoiding one async read_until call per header line. Keep the bounded
+    // line reader for fragmented blocks and an initial empty line.
+    let available = reader.fill_buf().await.map_err(Error::ReadData)?;
+    if !available.starts_with(b"\r\n") {
+        if let Some(end) = memchr::memmem::find(available, b"\n\r\n").map(|at| at + 3) {
+            if end as u64 <= MAX_HEADER_BLOCK_BYTES {
+                buffer.extend_from_slice(&available[..end]);
+                reader.consume_unpin(end);
+                return Ok(true);
+            }
+        }
+    }
     loop {
         let remaining = MAX_HEADER_BLOCK_BYTES - buffer.len() as u64;
         if remaining == 0 {
@@ -118,5 +131,50 @@ pub(super) async fn read_terminator<R: AsyncRead + Unpin>(reader: &mut R) -> Res
             b"\r\n\r\n".to_vec(),
             nom::error::ErrorKind::Tag,
         ))))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures_util::io::{BufReader, Cursor};
+
+    #[test]
+    fn header_blocks_match_at_every_input_boundary_without_consuming_body() {
+        futures_executor::block_on(async {
+            for header in [
+                "WARC/1.1\r\nContent-Length: 4\r\n\r\n",
+                "WARC/1.1\nContent-Length: 4\n\r\n",
+                "\r\n",
+                "WARC/1.1\r\nX: first\r\nX: second\r\n\r\n",
+            ] {
+                let bytes = format!("{header}body\r\n\r\n");
+                for capacity in 1..=bytes.len() {
+                    let mut reader =
+                        BufReader::with_capacity(capacity, Cursor::new(bytes.as_bytes()));
+                    let mut buffer = Vec::new();
+                    assert!(read_header_block(&mut reader, &mut buffer).await.unwrap());
+                    assert_eq!(buffer, header.as_bytes());
+                    let mut rest = Vec::new();
+                    reader.read_to_end(&mut rest).await.unwrap();
+                    assert_eq!(rest, b"body\r\n\r\n");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn buffered_fast_path_keeps_header_size_limit() {
+        futures_executor::block_on(async {
+            let bytes = [
+                b"X".repeat(MAX_HEADER_BLOCK_BYTES as usize),
+                b"\r\n\r\n".to_vec(),
+            ]
+            .concat();
+            let mut reader = Cursor::new(bytes);
+            let mut buffer = Vec::new();
+            assert!(read_header_block(&mut reader, &mut buffer).await.is_err());
+            assert_eq!(buffer.len(), MAX_HEADER_BLOCK_BYTES as usize);
+        });
     }
 }
