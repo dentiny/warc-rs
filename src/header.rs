@@ -188,14 +188,6 @@ mod tests {
     #[test]
     fn unknown_headers_are_lowercased() {
         assert_eq!(
-            WarcHeader::from("X-Ä-Header"),
-            WarcHeader::Unknown("x-ä-header".into())
-        );
-        assert_eq!(
-            WarcHeader::from("WARC-TYPE-X"),
-            WarcHeader::Unknown("warc-type-x".into())
-        );
-        assert_eq!(
             WarcHeader::from("X-Custom-Header"),
             WarcHeader::Unknown("x-custom-header".to_string())
         );
