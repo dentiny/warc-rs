@@ -13,9 +13,9 @@ keywords = ["warc", "web", "archive"]
 edition = "2018"
 
 [dependencies]
-memchr = "2"
 chrono = "0.4.11"
 futures-util = { version = "0.3", default-features = false, features = ["io", "std"] }
+memchr = "2"
 nom = "8.0.0"
 uuid = { version = "1.27.0", features = ["v4"] }
 
@@ -86,7 +86,3 @@ required-features = ["storage"]
 [[example]]
 name = "write_raw"
 required-features = ["storage"]
-
-[[bench]]
-name = "headers"
-harness = false
