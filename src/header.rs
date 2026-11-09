@@ -116,11 +116,7 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
                     return WarcHeader::Profile;
                 }
             }
-            13 => {
-                if string.eq_ignore_ascii_case("warc-filename") {
-                    return WarcHeader::Filename;
-                }
-            }
+            13 if string.eq_ignore_ascii_case("warc-filename") => return WarcHeader::Filename,
             14 => {
                 if string.eq_ignore_ascii_case("content-length") {
                     return WarcHeader::ContentLength;
@@ -143,20 +139,12 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
                     return WarcHeader::TargetURI;
                 }
             }
-            16 => {
-                if string.eq_ignore_ascii_case("warc-warcinfo-id") {
-                    return WarcHeader::WarcInfoID;
-                }
+            16 if string.eq_ignore_ascii_case("warc-warcinfo-id") => return WarcHeader::WarcInfoID,
+            17 if string.eq_ignore_ascii_case("warc-block-digest") => {
+                return WarcHeader::BlockDigest
             }
-            17 => {
-                if string.eq_ignore_ascii_case("warc-block-digest") {
-                    return WarcHeader::BlockDigest;
-                }
-            }
-            18 => {
-                if string.eq_ignore_ascii_case("warc-concurrent-to") {
-                    return WarcHeader::ConcurrentTo;
-                }
+            18 if string.eq_ignore_ascii_case("warc-concurrent-to") => {
+                return WarcHeader::ConcurrentTo
             }
             19 => {
                 if string.eq_ignore_ascii_case("warc-payload-digest") {
@@ -166,20 +154,14 @@ impl<S: AsRef<str>> From<S> for WarcHeader {
                     return WarcHeader::SegmentNumber;
                 }
             }
-            22 => {
-                if string.eq_ignore_ascii_case("warc-segment-origin-id") {
-                    return WarcHeader::SegmentOriginID;
-                }
+            22 if string.eq_ignore_ascii_case("warc-segment-origin-id") => {
+                return WarcHeader::SegmentOriginID
             }
-            25 => {
-                if string.eq_ignore_ascii_case("warc-segment-total-length") {
-                    return WarcHeader::SegmentTotalLength;
-                }
+            25 if string.eq_ignore_ascii_case("warc-segment-total-length") => {
+                return WarcHeader::SegmentTotalLength
             }
-            28 => {
-                if string.eq_ignore_ascii_case("warc-identified-payload-type") {
-                    return WarcHeader::IdentifiedPayloadType;
-                }
+            28 if string.eq_ignore_ascii_case("warc-identified-payload-type") => {
+                return WarcHeader::IdentifiedPayloadType
             }
             _ => {}
         }
