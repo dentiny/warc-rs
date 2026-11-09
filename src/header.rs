@@ -39,6 +39,7 @@ impl From<WarcHeader> for String {
     }
 }
 
+#[cfg(test)]
 const KNOWN_HEADERS: [WarcHeader; 19] = [
     WarcHeader::ContentLength,
     WarcHeader::ContentType,
@@ -98,11 +99,73 @@ impl Display for WarcHeader {
 impl<S: AsRef<str>> From<S> for WarcHeader {
     fn from(string: S) -> Self {
         let string = string.as_ref();
-        KNOWN_HEADERS
-            .iter()
-            .find(|header| header.as_str().eq_ignore_ascii_case(string))
-            .cloned()
-            .unwrap_or_else(|| WarcHeader::Unknown(string.to_lowercase()))
+        match string.len() {
+            9 => {
+                if string.eq_ignore_ascii_case("warc-date") {
+                    return WarcHeader::Date;
+                }
+                if string.eq_ignore_ascii_case("warc-type") {
+                    return WarcHeader::WarcType;
+                }
+            }
+            12 => {
+                if string.eq_ignore_ascii_case("content-type") {
+                    return WarcHeader::ContentType;
+                }
+                if string.eq_ignore_ascii_case("warc-profile") {
+                    return WarcHeader::Profile;
+                }
+            }
+            13 if string.eq_ignore_ascii_case("warc-filename") => return WarcHeader::Filename,
+            14 => {
+                if string.eq_ignore_ascii_case("content-length") {
+                    return WarcHeader::ContentLength;
+                }
+                if string.eq_ignore_ascii_case("warc-record-id") {
+                    return WarcHeader::RecordID;
+                }
+                if string.eq_ignore_ascii_case("warc-refers-to") {
+                    return WarcHeader::RefersTo;
+                }
+                if string.eq_ignore_ascii_case("warc-truncated") {
+                    return WarcHeader::Truncated;
+                }
+            }
+            15 => {
+                if string.eq_ignore_ascii_case("warc-ip-address") {
+                    return WarcHeader::IPAddress;
+                }
+                if string.eq_ignore_ascii_case("warc-target-uri") {
+                    return WarcHeader::TargetURI;
+                }
+            }
+            16 if string.eq_ignore_ascii_case("warc-warcinfo-id") => return WarcHeader::WarcInfoID,
+            17 if string.eq_ignore_ascii_case("warc-block-digest") => {
+                return WarcHeader::BlockDigest
+            }
+            18 if string.eq_ignore_ascii_case("warc-concurrent-to") => {
+                return WarcHeader::ConcurrentTo
+            }
+            19 => {
+                if string.eq_ignore_ascii_case("warc-payload-digest") {
+                    return WarcHeader::PayloadDigest;
+                }
+                if string.eq_ignore_ascii_case("warc-segment-number") {
+                    return WarcHeader::SegmentNumber;
+                }
+            }
+            22 if string.eq_ignore_ascii_case("warc-segment-origin-id") => {
+                return WarcHeader::SegmentOriginID
+            }
+            25 if string.eq_ignore_ascii_case("warc-segment-total-length") => {
+                return WarcHeader::SegmentTotalLength
+            }
+            28 if string.eq_ignore_ascii_case("warc-identified-payload-type") => {
+                return WarcHeader::IdentifiedPayloadType
+            }
+            _ => {}
+        }
+        WarcHeader::Unknown(string.to_lowercase())
     }
 }
 
