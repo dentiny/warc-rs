@@ -18,6 +18,19 @@ async fn read_header_block<R: AsyncBufRead + Unpin>(
     reader: &mut R,
     buffer: &mut Vec<u8>,
 ) -> Result<bool, Error> {
+    // Most headers fit in the current input buffer. Copy their complete block
+    // once, avoiding one async read_until call per header line. Keep the bounded
+    // line reader for fragmented blocks and an initial empty line.
+    let available = reader.fill_buf().await.map_err(Error::ReadData)?;
+    if !available.starts_with(b"\r\n") {
+        if let Some(end) = memchr::memmem::find(available, b"\n\r\n").map(|at| at + 3) {
+            if end as u64 <= MAX_HEADER_BLOCK_BYTES {
+                buffer.extend_from_slice(&available[..end]);
+                reader.consume_unpin(end);
+                return Ok(true);
+            }
+        }
+    }
     loop {
         let remaining = MAX_HEADER_BLOCK_BYTES - buffer.len() as u64;
         if remaining == 0 {

@@ -15,6 +15,7 @@ edition = "2018"
 [dependencies]
 chrono = "0.4.11"
 futures-util = { version = "0.3", default-features = false, features = ["io", "std"] }
+memchr = "2"
 nom = "8.0.0"
 uuid = { version = "1.27.0", features = ["v4"] }
 
