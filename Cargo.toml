@@ -85,3 +85,7 @@ required-features = ["storage"]
 [[example]]
 name = "write_raw"
 required-features = ["storage"]
+
+[[bench]]
+name = "conversion"
+harness = false
