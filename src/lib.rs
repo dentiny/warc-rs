@@ -29,6 +29,8 @@ pub mod parser;
 mod record;
 pub use record::{BufferedBody, EmptyBody, RawRecordHeader, Record, RecordBuilder, StreamingBody};
 
+mod named_type;
+
 mod record_type;
 pub use record_type::RecordType;
 
