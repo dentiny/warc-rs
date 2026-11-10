@@ -17,13 +17,7 @@ use std::pin::Pin;
 /// SlowDown` and its retry delay are worth a seek.
 const SEEK_THRESHOLD: u64 = 32 * 1_048_576;
 
-/// An iterator-like type to "stream" records from a reader.
-///
-/// This API returns records which use the `StreamingBody` type. This allows reading record headers
-/// and metadata without reading the bodies. Bodies can be read or skipped as desired.
-///
-/// This is streaming iterator is particularly useful for streams of records which are indefinite
-/// or contain and records of unknown size.
+/// Reads record headers while letting callers read or skip each [`StreamingBody`].
 pub struct StreamingIter<'r, R> {
     reader: &'r mut R,
     seek: Option<PollSeek<R>>,
@@ -74,12 +68,8 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
         read_terminator(self.reader).await
     }
 
-    /// Advance the stream to the next item.
-    ///
-    /// Returns one of the following:
-    /// * Some(Ok(r))` is the next record read from the stream.
-    /// * `Some(Err)` indicates there was a read error.
-    /// * `None` indicates no more records are returned.
+    /// Skip the previous record's unread body and return the next record or error.
+    /// Returns `None` at end of input.
     pub async fn next_item(&mut self) -> Option<Result<Record<StreamingBody<'_, R>>, Error>> {
         if std::mem::take(&mut self.in_record) {
             if let Err(e) = self.skip_body().await {
