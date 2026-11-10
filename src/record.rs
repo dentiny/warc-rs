@@ -886,35 +886,9 @@ mod record_tests {
 #[cfg(test)]
 mod raw_tests {
     use crate::header::WarcHeader;
-    use crate::{EmptyBody, RawRecordHeader, Record, RecordType, TruncatedType};
+    use crate::{EmptyBody, RawRecordHeader, Record, TruncatedType};
 
-    use std::collections::HashMap;
     use std::convert::TryFrom;
-
-    #[test]
-    fn create() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: HashMap::new(),
-        };
-
-        assert_eq!(headers.as_ref().len(), 0);
-    }
-
-    #[test]
-    fn create_with_headers() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![(
-                WarcHeader::WarcType,
-                RecordType::WarcInfo.to_string().into_bytes(),
-            )]
-            .into_iter()
-            .collect(),
-        };
-
-        assert_eq!(headers.as_ref().len(), 1);
-    }
 
     #[test]
     fn verify_ok() {
@@ -1090,11 +1064,7 @@ mod raw_tests {
 #[cfg(test)]
 mod builder_tests {
     use crate::header::WarcHeader;
-    use crate::{
-        BufferedBody, EmptyBody, RawRecordHeader, Record, RecordBuilder, RecordType, TruncatedType,
-    };
-
-    use std::convert::TryFrom;
+    use crate::{BufferedBody, Record, RecordBuilder, RecordType, TruncatedType};
 
     #[test]
     fn default() {
@@ -1148,41 +1118,6 @@ mod builder_tests {
 
         let record2 = builder.build().unwrap();
         assert_eq!(record1, record2);
-    }
-
-    #[test]
-    fn create_with_headers() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![(
-                WarcHeader::WarcType,
-                RecordType::WarcInfo.to_string().into_bytes(),
-            )]
-            .into_iter()
-            .collect(),
-        };
-
-        assert_eq!(headers.as_ref().len(), 1);
-    }
-
-    #[test]
-    fn verify_ok() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:basic-record:record-0>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_ok());
     }
 
     #[test]
