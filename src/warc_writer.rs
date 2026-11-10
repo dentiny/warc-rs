@@ -203,18 +203,21 @@ mod tests {
             .unwrap();
 
         let mut writer = WarcWriter::new(Vec::new());
-        let written = block_on(writer.write(&record)).unwrap();
+        let written =
+            block_on(writer.write(&record)).unwrap() + block_on(writer.write(&record)).unwrap();
         let output = writer.into_inner();
         assert_eq!(written, output.len());
 
         let mut raw = WarcReader::new(Cursor::new(output)).iter_raw_records();
-        let (headers, body) = block_on(raw.next()).unwrap().unwrap();
-        assert_eq!(headers, record.to_raw_header());
-        assert_eq!(
-            headers.as_ref().get(&WarcHeader::WarcType).unwrap(),
-            b"response"
-        );
-        assert_eq!(body, b"hello");
+        for _ in 0..2 {
+            let (headers, body) = block_on(raw.next()).unwrap().unwrap();
+            assert_eq!(headers, record.to_raw_header());
+            assert_eq!(
+                headers.as_ref().get(&WarcHeader::WarcType).unwrap(),
+                b"response"
+            );
+            assert_eq!(body, b"hello");
+        }
         assert!(block_on(raw.next()).is_none());
     }
 }

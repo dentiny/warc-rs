@@ -59,71 +59,8 @@ impl<R: AsyncBufRead + Unpin> RecordIter<R> {
 mod tests {
     use futures_executor::block_on;
     use futures_util::io::Cursor;
-    use std::collections::HashMap;
-    use std::iter::FromIterator;
 
-    use crate::{Error, WarcHeader, WarcReader};
-
-    #[test]
-    fn two_records() {
-        let raw = b"\
-            WARC/1.0\r\n\
-            Warc-Type: dunno\r\n\
-            Content-Length: 5\r\n\
-            WARC-Record-Id: <urn:test:two-records:record-0>\r\n\
-            WARC-Date: 2020-07-08T02:52:55Z\r\n\
-            \r\n\
-            12345\r\n\
-            \r\n\
-            WARC/1.0\r\n\
-            Warc-Type: another\r\n\
-            WARC-Record-Id: <urn:test:two-records:record-1>\r\n\
-            WARC-Date: 2020-07-08T02:52:56Z\r\n\
-            Content-Length: 6\r\n\
-            \r\n\
-            123456\r\n\
-            \r\n\
-        ";
-
-        let mut reader = WarcReader::new(Cursor::new(&raw[..])).iter_raw_records();
-        {
-            let expected_version = "1.0";
-            let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:two-records:record-0>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]);
-            let expected_body: &[u8] = b"12345";
-
-            let (headers, body) = block_on(reader.next()).unwrap().unwrap();
-            assert_eq!(headers.version, expected_version);
-            assert_eq!(headers.as_ref(), &expected_headers);
-            assert_eq!(body, expected_body);
-        }
-
-        {
-            let expected_version = "1.0";
-            let expected_headers: HashMap<WarcHeader, Vec<u8>> = HashMap::from_iter(vec![
-                (WarcHeader::WarcType, b"another".to_vec()),
-                (WarcHeader::ContentLength, b"6".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:two-records:record-1>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:56Z".to_vec()),
-            ]);
-            let expected_body: &[u8] = b"123456";
-
-            let (headers, body) = block_on(reader.next()).unwrap().unwrap();
-            assert_eq!(headers.version, expected_version);
-            assert_eq!(headers.as_ref(), &expected_headers);
-            assert_eq!(body, expected_body);
-        }
-    }
+    use crate::{Error, WarcReader};
 
     #[test]
     fn truncated_body_is_unexpected_eob() {
