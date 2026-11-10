@@ -853,11 +853,11 @@ mod raw_tests {
     use std::convert::TryFrom;
 
     #[test]
-    fn verify_missing_required_headers() {
+    fn required_headers_report_the_missing_field() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
             headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
+                (WarcHeader::WarcType, b"response".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
                     WarcHeader::RecordID,
@@ -877,8 +877,12 @@ mod raw_tests {
             let mut incomplete = headers.clone();
             incomplete.headers.remove(&missing);
             assert!(
-                Record::<EmptyBody>::try_from(incomplete).is_err(),
-                "missing {missing}"
+                matches!(
+                    Record::<EmptyBody>::try_from(incomplete),
+                    Err(crate::Error::MissingHeader(header)) if header == missing
+                ),
+                "expected missing header {}",
+                missing
             );
         }
     }
