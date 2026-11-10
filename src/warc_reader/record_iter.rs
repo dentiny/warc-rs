@@ -57,13 +57,12 @@ impl<R: AsyncBufRead + Unpin> RecordIter<R> {
 
 #[cfg(test)]
 mod tests {
-    use futures_executor::block_on;
     use futures_util::io::Cursor;
 
     use crate::{Error, WarcReader};
 
-    #[test]
-    fn truncated_body_is_unexpected_eob() {
+    #[tokio::test]
+    async fn truncated_body_is_unexpected_eob() {
         let raw = b"\
             WARC/1.0\r\n\
             Content-Length: 10\r\n\
@@ -73,13 +72,13 @@ mod tests {
 
         let mut reader = WarcReader::new(Cursor::new(&raw[..])).iter_raw_records();
         assert!(matches!(
-            block_on(reader.next()),
+            reader.next().await,
             Some(Err(Error::UnexpectedEOB))
         ));
     }
 
-    #[test]
-    fn zero_and_nonzero_content_length() {
+    #[tokio::test]
+    async fn zero_and_nonzero_content_length() {
         let raw = b"\
         WARC/1.0\r\n\
         Warc-Type: empty-record\r\n\
@@ -101,13 +100,13 @@ mod tests {
 
         let mut iter = WarcReader::new(Cursor::new(&raw[..])).iter_records();
 
-        let record = block_on(iter.next()).unwrap().unwrap();
+        let record = iter.next().await.unwrap().unwrap();
         assert_eq!(record.warc_version(), "1.0");
         assert_eq!(record.content_length(), 0);
         assert_eq!(record.warc_id(), "<urn:test:zero-content-length>");
         assert!(record.body().is_empty());
 
-        let record = block_on(iter.next()).unwrap().unwrap();
+        let record = iter.next().await.unwrap().unwrap();
         assert_eq!(record.warc_version(), "1.0");
         assert_eq!(record.content_length(), 7);
         assert_eq!(record.warc_id(), "<urn:test:nonzero-content-length>");

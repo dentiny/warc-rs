@@ -135,7 +135,6 @@ mod tests {
     #[cfg(feature = "storage")]
     use crate::{BufferedBody, EmptyBody, Record};
 
-    use futures_executor::block_on;
     #[cfg(feature = "storage")]
     use futures_util::io::AsyncBufRead;
     use futures_util::io::Cursor;
@@ -191,8 +190,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn write_emits_every_header() {
+    #[tokio::test]
+    async fn write_emits_every_header() {
         let record = RecordBuilder::default()
             .warc_type(RecordType::Response)
             .truncated_type(TruncatedType::Length)
@@ -203,14 +202,13 @@ mod tests {
             .unwrap();
 
         let mut writer = WarcWriter::new(Vec::new());
-        let written =
-            block_on(writer.write(&record)).unwrap() + block_on(writer.write(&record)).unwrap();
+        let written = writer.write(&record).await.unwrap() + writer.write(&record).await.unwrap();
         let output = writer.into_inner();
         assert_eq!(written, output.len());
 
         let mut raw = WarcReader::new(Cursor::new(output)).iter_raw_records();
         for _ in 0..2 {
-            let (headers, body) = block_on(raw.next()).unwrap().unwrap();
+            let (headers, body) = raw.next().await.unwrap().unwrap();
             assert_eq!(headers, record.to_raw_header());
             assert_eq!(
                 headers.as_ref().get(&WarcHeader::WarcType).unwrap(),
@@ -218,6 +216,6 @@ mod tests {
             );
             assert_eq!(body, b"hello");
         }
-        assert!(block_on(raw.next()).is_none());
+        assert!(raw.next().await.is_none());
     }
 }
