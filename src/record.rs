@@ -755,15 +755,13 @@ mod record_tests {
     #[test]
     fn default() {
         let before = Utc::now();
-        std::thread::sleep(std::time::Duration::from_millis(10));
         let record = Record::<BufferedBody>::default();
-        std::thread::sleep(std::time::Duration::from_millis(10));
         let after = Utc::now();
         assert_eq!(record.content_length(), 0);
         assert_eq!(record.warc_version(), "1.0");
         assert_eq!(record.warc_type(), &RecordType::Resource);
-        assert!(record.date() > &before);
-        assert!(record.date() < &after);
+        assert!(record.date() >= &before);
+        assert!(record.date() <= &after);
     }
 
     #[test]
