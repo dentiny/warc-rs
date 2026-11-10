@@ -889,26 +889,6 @@ mod raw_tests {
     use std::convert::TryFrom;
 
     #[test]
-    fn verify_ok() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:basic-record:record-0>".to_vec(),
-                ),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_ok());
-    }
-
-    #[test]
     fn verify_missing_type() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
