@@ -1023,189 +1023,47 @@ mod builder_tests {
         assert!(builder.build().is_err());
     }
 
-    #[test]
-    fn verify_build_date() {
-        const DATE_STRING_0: &str = "2020-07-08T02:52:55Z";
-        const DATE_STRING_1: &[u8] = b"2020-07-18T02:12:45Z";
-
-        let mut builder = RecordBuilder::default();
-        builder = builder.date(Record::<BufferedBody>::parse_record_date(DATE_STRING_0).unwrap());
-
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_0.as_bytes()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_0.as_bytes()
-        );
-
-        builder = builder.header(WarcHeader::Date, DATE_STRING_1.to_vec());
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_1.to_vec()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Date)
-                .unwrap(),
-            &DATE_STRING_1.to_vec()
-        );
-
-        let builder = builder.header(WarcHeader::Date, b"not-a-dayTor:a:time".to_vec());
-        assert!(builder.build().is_err());
+    fn assert_built_header(builder: &RecordBuilder, header: WarcHeader, expected: &[u8]) {
+        let raw = builder.clone().build_raw().0;
+        let validated = builder.clone().build().unwrap().into_raw_parts().0;
+        for headers in [raw, validated] {
+            assert_eq!(headers.as_ref().get(&header).unwrap().as_slice(), expected);
+        }
     }
 
     #[test]
-    fn verify_build_record_id() {
-        const RECORD_ID_0: &[u8] = b"<urn:test:verify-build-id:record-0>";
-        const RECORD_ID_1: &[u8] = b"<urn:test:verify-build-id:record-1>";
+    fn typed_and_generic_headers_survive_raw_and_validated_builds() {
+        let date = "2020-07-08T02:52:55Z";
+        let builder =
+            RecordBuilder::default().date(Record::<BufferedBody>::parse_record_date(date).unwrap());
+        assert_built_header(&builder, WarcHeader::Date, date.as_bytes());
+        let builder = builder.header(WarcHeader::Date, b"2020-07-18T02:12:45Z".to_vec());
+        assert_built_header(&builder, WarcHeader::Date, b"2020-07-18T02:12:45Z");
+        assert!(builder
+            .header(WarcHeader::Date, b"not-a-dayTor:a:time".to_vec())
+            .build()
+            .is_err());
 
-        let mut builder = RecordBuilder::default();
-        builder = builder.warc_id(std::str::from_utf8(RECORD_ID_0).unwrap());
-
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::RecordID)
-                .unwrap(),
-            &RECORD_ID_0.to_vec()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::RecordID)
-                .unwrap(),
-            &RECORD_ID_0.to_vec()
+        let id = "<urn:test:verify-build-id:record-0>";
+        let builder = RecordBuilder::default().warc_id(id);
+        assert_built_header(&builder, WarcHeader::RecordID, id.as_bytes());
+        assert_built_header(
+            &builder.header(
+                WarcHeader::RecordID,
+                b"<urn:test:verify-build-id:record-1>".to_vec(),
+            ),
+            WarcHeader::RecordID,
+            b"<urn:test:verify-build-id:record-1>",
         );
 
-        let builder = builder.header(WarcHeader::RecordID, RECORD_ID_1.to_vec());
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::RecordID)
-                .unwrap(),
-            &RECORD_ID_1.to_vec()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::RecordID)
-                .unwrap(),
-            &RECORD_ID_1.to_vec()
-        );
-    }
-
-    #[test]
-    fn verify_build_truncated_type() {
-        const TRUNCATED_TYPE_0: &[u8] = b"length";
-        const TRUNCATED_TYPE_1: &[u8] = b"disconnect";
-
-        let mut builder = RecordBuilder::default();
-        builder = builder.truncated_type(TruncatedType::Length);
-
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap(),
-            &TRUNCATED_TYPE_0.to_vec()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap(),
-            &TRUNCATED_TYPE_0.to_vec()
-        );
-
-        builder = builder.header(WarcHeader::Truncated, "disconnect");
-        let record = builder.clone().build().unwrap();
-        assert_eq!(
-            record
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap(),
-            &TRUNCATED_TYPE_1.to_vec()
-        );
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap(),
-            &TRUNCATED_TYPE_1.to_vec()
-        );
-
-        builder = builder.header(WarcHeader::Truncated, "foreign-intervention");
-        assert_eq!(
-            builder
-                .clone()
-                .build()
-                .unwrap()
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap()
-                .as_slice(),
-            &b"foreign-intervention"[..]
-        );
-
-        assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::Truncated)
-                .unwrap()
-                .as_slice(),
-            &b"foreign-intervention"[..]
-        );
+        let builder = RecordBuilder::default().truncated_type(TruncatedType::Length);
+        assert_built_header(&builder, WarcHeader::Truncated, b"length");
+        for value in ["disconnect", "foreign-intervention"] {
+            assert_built_header(
+                &builder.clone().header(WarcHeader::Truncated, value),
+                WarcHeader::Truncated,
+                value.as_bytes(),
+            );
+        }
     }
 }
