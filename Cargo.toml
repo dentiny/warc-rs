@@ -1,6 +1,6 @@
 [package]
 name = "warc-rs"
-version = "0.3.2"
+version = "0.3.3"
 description = "Async WARC reader/writer with OpenDAL storage (fork of the warc crate)."
 readme = "README.md"
 repository = "https://github.com/dentiny/warc-rs"
