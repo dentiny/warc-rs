@@ -210,6 +210,10 @@ mod tests {
         let mut raw = WarcReader::new(Cursor::new(output)).iter_raw_records();
         let (headers, body) = block_on(raw.next()).unwrap().unwrap();
         assert_eq!(headers, record.to_raw_header());
+        assert_eq!(
+            headers.as_ref().get(&WarcHeader::WarcType).unwrap(),
+            b"response"
+        );
         assert_eq!(body, b"hello");
         assert!(block_on(raw.next()).is_none());
     }

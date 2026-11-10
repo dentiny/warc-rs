@@ -967,7 +967,7 @@ mod raw_tests {
 #[cfg(test)]
 mod builder_tests {
     use crate::header::WarcHeader;
-    use crate::{BufferedBody, Record, RecordBuilder, RecordType, TruncatedType};
+    use crate::{BufferedBody, Record, RecordBuilder, TruncatedType};
 
     #[test]
     fn default() {
@@ -1021,25 +1021,6 @@ mod builder_tests {
         );
 
         assert!(builder.build().is_err());
-    }
-
-    #[test]
-    fn verify_build_record_type() {
-        let builder1 = RecordBuilder::default().header(WarcHeader::WarcType, "request");
-        let builder2 = builder1.clone().warc_type(RecordType::Request);
-
-        let record1 = builder1.build().unwrap();
-        let record2 = builder2.build().unwrap();
-
-        assert_eq!(record1, record2);
-        assert_eq!(
-            record1
-                .into_raw_parts()
-                .0
-                .as_ref()
-                .get(&WarcHeader::WarcType),
-            Some(&b"request".to_vec())
-        );
     }
 
     #[test]
