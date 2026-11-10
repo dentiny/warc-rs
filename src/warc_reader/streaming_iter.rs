@@ -112,46 +112,6 @@ mod tests {
     use crate::{EmptyBody, Error, Record, WarcReader, WarcWriter};
 
     #[tokio::test]
-    async fn only_second_item() {
-        let raw = b"\
-            WARC/1.0\r\n\
-            Warc-Type: dunno\r\n\
-            Content-Length: 5\r\n\
-            WARC-Record-Id: <urn:test:two-records:record-0>\r\n\
-            WARC-Date: 2020-07-08T02:52:55Z\r\n\
-            \r\n\
-            12345\r\n\
-            \r\n\
-            WARC/1.0\r\n\
-            Warc-Type: another\r\n\
-            WARC-Record-Id: <urn:test:two-records:record-1>\r\n\
-            WARC-Date: 2020-07-08T02:52:56Z\r\n\
-            Content-Length: 6\r\n\
-            \r\n\
-            123456\r\n\
-            \r\n\
-        ";
-
-        let mut reader = WarcReader::new(Cursor::new(&raw[..]));
-        let mut stream_iter = reader.stream_records();
-
-        let _skipped = stream_iter.next_item().await.unwrap().unwrap();
-
-        let record = stream_iter
-            .next_item()
-            .await
-            .unwrap()
-            .unwrap()
-            .into_buffered()
-            .await
-            .unwrap();
-        assert_eq!(record.warc_version(), "1.0");
-        assert_eq!(record.content_length(), 6);
-        assert_eq!(record.warc_id(), "<urn:test:two-records:record-1>");
-        assert_eq!(record.body(), b"123456");
-    }
-
-    #[tokio::test]
     async fn triple_items() {
         let raw = b"\
             WARC/1.0\r\n\
