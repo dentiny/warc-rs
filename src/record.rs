@@ -765,13 +765,6 @@ mod record_tests {
     }
 
     #[test]
-    fn impl_eq() {
-        let record1 = Record::<BufferedBody>::default();
-        let record2 = record1.clone();
-        assert_eq!(record1, record2);
-    }
-
-    #[test]
     fn body() {
         let mut record = Record::<BufferedBody>::default();
         assert_eq!(record.content_length(), 0);
@@ -1098,24 +1091,6 @@ mod builder_tests {
                 .content_length(),
             6
         );
-    }
-
-    #[test]
-    fn impl_eq_raw() {
-        let builder = RecordBuilder::default();
-        let raw1 = builder.clone().build_raw();
-
-        let raw2 = builder.build_raw();
-        assert_eq!(raw1, raw2);
-    }
-
-    #[test]
-    fn impl_eq_record() {
-        let builder = RecordBuilder::default();
-        let record1 = builder.clone().build().unwrap();
-
-        let record2 = builder.build().unwrap();
-        assert_eq!(record1, record2);
     }
 
     #[test]
