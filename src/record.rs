@@ -985,27 +985,6 @@ mod builder_tests {
     }
 
     #[test]
-    fn default_with_body() {
-        let (headers, body) = RecordBuilder::default()
-            .body(b"abcdef".to_vec())
-            .build_raw();
-        assert_eq!(headers.version, "1.0".to_string());
-        assert_eq!(
-            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
-            &b"6".to_vec()
-        );
-        assert_eq!(body.as_slice(), b"abcdef");
-        assert_eq!(
-            RecordBuilder::default()
-                .body(b"abcdef".to_vec())
-                .build()
-                .unwrap()
-                .content_length(),
-            6
-        );
-    }
-
-    #[test]
     fn verify_content_length() {
         let mut builder = RecordBuilder::default().body(b"12345".to_vec());
 
@@ -1022,16 +1001,12 @@ mod builder_tests {
             &b"5".to_vec()
         );
 
+        let (headers, body) = builder.clone().build_raw();
         assert_eq!(
-            builder
-                .clone()
-                .build_raw()
-                .0
-                .as_ref()
-                .get(&WarcHeader::ContentLength)
-                .unwrap(),
-            &b"5".to_vec()
+            headers.as_ref().get(&WarcHeader::ContentLength).unwrap(),
+            b"5"
         );
+        assert_eq!(body, b"12345");
 
         builder = builder.header(WarcHeader::ContentLength, "1");
         assert_eq!(
