@@ -889,10 +889,11 @@ mod raw_tests {
     use std::convert::TryFrom;
 
     #[test]
-    fn verify_missing_type() {
+    fn required_headers_report_the_missing_field() {
         let headers = RawRecordHeader {
             version: "1.0".to_owned(),
             headers: vec![
+                (WarcHeader::WarcType, b"response".to_vec()),
                 (WarcHeader::ContentLength, b"5".to_vec()),
                 (
                     WarcHeader::RecordID,
@@ -903,62 +904,23 @@ mod raw_tests {
             .into_iter()
             .collect(),
         };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_err());
-    }
-
-    #[test]
-    fn verify_missing_content_length() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:basic-record:record-0>".to_vec(),
+        for missing in [
+            WarcHeader::WarcType,
+            WarcHeader::ContentLength,
+            WarcHeader::RecordID,
+            WarcHeader::Date,
+        ] {
+            let mut incomplete = headers.clone();
+            incomplete.headers.remove(&missing);
+            assert!(
+                matches!(
+                    Record::<EmptyBody>::try_from(incomplete),
+                    Err(crate::Error::MissingHeader(header)) if header == missing
                 ),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_err());
-    }
-
-    #[test]
-    fn verify_missing_record_id() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (WarcHeader::Date, b"2020-07-08T02:52:55Z".to_vec()),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_err());
-    }
-
-    #[test]
-    fn verify_missing_date() {
-        let headers = RawRecordHeader {
-            version: "1.0".to_owned(),
-            headers: vec![
-                (WarcHeader::WarcType, b"dunno".to_vec()),
-                (WarcHeader::ContentLength, b"5".to_vec()),
-                (
-                    WarcHeader::RecordID,
-                    b"<urn:test:basic-record:record-0>".to_vec(),
-                ),
-            ]
-            .into_iter()
-            .collect(),
-        };
-
-        assert!(Record::<EmptyBody>::try_from(headers).is_err());
+                "expected missing header {}",
+                missing
+            );
+        }
     }
 
     fn truncated_record() -> Record<EmptyBody> {
