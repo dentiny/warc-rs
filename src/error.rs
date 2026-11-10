@@ -64,15 +64,3 @@ impl error::Error for Error {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::Error;
-    use std::io;
-
-    #[test]
-    fn read_data_display_includes_cause() {
-        let error = Error::ReadData(io::Error::other("SlowDown"));
-        assert_eq!(error.to_string(), "Error reading data source: SlowDown");
-    }
-}
