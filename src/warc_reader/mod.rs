@@ -38,27 +38,18 @@ impl<R: AsyncBufRead + Unpin> WarcReader<R> {
         }
     }
 
-    /// Create a stream over all of the raw records read.
-    ///
-    /// This only does well-formedness checks on the headers. See `RawRecordHeader` for more
-    /// information.
+    /// Read raw records, checking header syntax without validating required fields.
     pub fn iter_raw_records(self) -> RawRecordIter<R> {
         RawRecordIter::new(self.reader)
     }
 
-    /// Create a stream over all of the records read.
-    ///
-    /// This will fully build each record and check it for semantic correctness. See the `Record`
-    /// type for more information.
+    /// Read buffered records, validating headers through [`crate::Record`].
     pub fn iter_records(self) -> RecordIter<R> {
         RecordIter::new(self.reader)
     }
 
-    /// Create a streaming iterator over all of the records read.
-    ///
-    /// This will build each record header, and allow the caller to decide whether to read
-    /// the body or not. For readers created with `new_seekable`, large bodies the caller does
-    /// not read are skipped by seeking.
+    /// Read headers and choose whether to consume each body.
+    /// Readers created with [`Self::new_seekable`] seek past large unread bodies.
     pub fn stream_records(&mut self) -> StreamingIter<'_, R> {
         StreamingIter::new(&mut self.reader, self.seek)
     }
