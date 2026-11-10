@@ -97,7 +97,6 @@ impl<R: AsyncBufRead + Unpin> StreamingIter<'_, R> {
 
 #[cfg(test)]
 mod tests {
-    use futures_executor::block_on;
     use futures_util::io::{AsyncBufRead, AsyncRead, AsyncReadExt, AsyncSeek, Cursor};
     #[cfg(feature = "storage")]
     use opendal::services::Memory;
@@ -112,8 +111,8 @@ mod tests {
     use super::SEEK_THRESHOLD;
     use crate::{EmptyBody, Error, Record, WarcReader, WarcWriter};
 
-    #[test]
-    fn triple_items() {
+    #[tokio::test]
+    async fn triple_items() {
         let raw = b"\
             WARC/1.0\r\n\
             Warc-Type: dunno\r\n\
@@ -141,35 +140,33 @@ mod tests {
             \r\n\
         ";
 
-        block_on(async {
-            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
-            let mut stream_iter = reader.stream_records();
+        let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+        let mut stream_iter = reader.stream_records();
 
-            for (len, id, body) in [
-                (5, "<urn:test:three-records:record-0>", &b"12345"[..]),
-                (6, "<urn:test:three-records:record-1>", &b"123456"[..]),
-                (8, "<urn:test:three-records:record-2>", &b"12345678"[..]),
-            ]
-            .iter()
-            {
-                let record = stream_iter
-                    .next_item()
-                    .await
-                    .unwrap()
-                    .unwrap()
-                    .into_buffered()
-                    .await
-                    .unwrap();
-                assert_eq!(record.warc_version(), "1.0");
-                assert_eq!(record.content_length(), *len);
-                assert_eq!(record.warc_id(), *id);
-                assert_eq!(record.body(), *body);
-            }
-        });
+        for (len, id, body) in [
+            (5, "<urn:test:three-records:record-0>", &b"12345"[..]),
+            (6, "<urn:test:three-records:record-1>", &b"123456"[..]),
+            (8, "<urn:test:three-records:record-2>", &b"12345678"[..]),
+        ]
+        .iter()
+        {
+            let record = stream_iter
+                .next_item()
+                .await
+                .unwrap()
+                .unwrap()
+                .into_buffered()
+                .await
+                .unwrap();
+            assert_eq!(record.warc_version(), "1.0");
+            assert_eq!(record.content_length(), *len);
+            assert_eq!(record.warc_id(), *id);
+            assert_eq!(record.body(), *body);
+        }
     }
 
-    #[test]
-    fn bad_terminator_does_not_skip_body_twice() {
+    #[tokio::test]
+    async fn bad_terminator_does_not_skip_body_twice() {
         let raw = b"\
             WARC/1.0\r\n\
             Warc-Type: dunno\r\n\
@@ -188,23 +185,21 @@ mod tests {
             \r\n\
         ";
 
-        block_on(async {
-            let mut reader = WarcReader::new(Cursor::new(&raw[..]));
-            let mut stream_iter = reader.stream_records();
+        let mut reader = WarcReader::new(Cursor::new(&raw[..]));
+        let mut stream_iter = reader.stream_records();
 
-            stream_iter.next_item().await.unwrap().unwrap();
-            assert!(stream_iter.next_item().await.unwrap().is_err());
-            let record = stream_iter
-                .next_item()
-                .await
-                .unwrap()
-                .unwrap()
-                .into_buffered()
-                .await
-                .unwrap();
-            assert_eq!(record.warc_id(), "<urn:test:bad-terminator:record-1>");
-            assert_eq!(record.body(), b"123456");
-        });
+        stream_iter.next_item().await.unwrap().unwrap();
+        assert!(stream_iter.next_item().await.unwrap().is_err());
+        let record = stream_iter
+            .next_item()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_buffered()
+            .await
+            .unwrap();
+        assert_eq!(record.warc_id(), "<urn:test:bad-terminator:record-1>");
+        assert_eq!(record.body(), b"123456");
     }
 
     /// Counts the bytes consumed from, and the seeks issued to, an in-memory reader.
@@ -265,55 +260,55 @@ mod tests {
         vec![b'x'; 2 * SEEK_THRESHOLD as usize]
     }
 
-    fn warc(bodies: &[&[u8]]) -> Vec<u8> {
+    async fn warc(bodies: &[&[u8]]) -> Vec<u8> {
         let mut writer = WarcWriter::new(Vec::new());
         for body in bodies {
             let record = Record::<EmptyBody>::default().add_body(body.to_vec());
-            block_on(writer.write(&record)).unwrap();
+            writer.write(&record).await.unwrap();
         }
         writer.into_inner()
     }
 
-    fn skip_first_read_second<R: AsyncBufRead + Unpin>(reader: &mut WarcReader<R>) -> Vec<u8> {
-        block_on(async {
-            let mut iter = reader.stream_records();
-            iter.next_item().await.unwrap().unwrap();
-            let second = iter.next_item().await.unwrap().unwrap();
-            second.into_buffered().await.unwrap().body().to_vec()
-        })
+    async fn skip_first_read_second<R: AsyncBufRead + Unpin>(
+        reader: &mut WarcReader<R>,
+    ) -> Vec<u8> {
+        let mut iter = reader.stream_records();
+        iter.next_item().await.unwrap().unwrap();
+        let second = iter.next_item().await.unwrap().unwrap();
+        second.into_buffered().await.unwrap().body().to_vec()
     }
 
-    #[test]
-    fn seeks_past_large_unread_body() {
-        let data = warc(&[&large_body(), b"hello"]);
+    #[tokio::test]
+    async fn seeks_past_large_unread_body() {
+        let data = warc(&[&large_body(), b"hello"]).await;
         let mut reader = WarcReader::new_seekable(CountingReader::new(data));
-        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(skip_first_read_second(&mut reader).await, b"hello");
         assert_eq!(reader.reader.seeks, 1);
         assert!(reader.reader.consumed < SEEK_THRESHOLD);
     }
 
-    #[test]
-    fn reads_through_small_body() {
-        let data = warc(&[&[b'x'; 1_024], b"hello"]);
+    #[tokio::test]
+    async fn reads_through_small_body() {
+        let data = warc(&[&[b'x'; 1_024], b"hello"]).await;
         let mut reader = WarcReader::new_seekable(CountingReader::new(data));
-        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(skip_first_read_second(&mut reader).await, b"hello");
         assert_eq!(reader.reader.seeks, 0);
     }
 
-    #[test]
-    fn new_never_seeks() {
-        let data = warc(&[&large_body(), b"hello"]);
+    #[tokio::test]
+    async fn new_never_seeks() {
+        let data = warc(&[&large_body(), b"hello"]).await;
         let mut reader = WarcReader::new(CountingReader::new(data));
-        assert_eq!(skip_first_read_second(&mut reader), b"hello");
+        assert_eq!(skip_first_read_second(&mut reader).await, b"hello");
         assert_eq!(reader.reader.seeks, 0);
         assert!(reader.reader.consumed > 2 * SEEK_THRESHOLD);
     }
 
-    #[test]
-    fn seeks_past_rest_of_partially_read_body() {
-        let data = warc(&[&large_body(), b"hello"]);
+    #[tokio::test]
+    async fn seeks_past_rest_of_partially_read_body() {
+        let data = warc(&[&large_body(), b"hello"]).await;
         let mut reader = WarcReader::new_seekable(CountingReader::new(data));
-        block_on(async {
+        {
             let mut iter = reader.stream_records();
             let mut first = iter.next_item().await.unwrap().unwrap();
             let mut prefix = [0; 100];
@@ -321,23 +316,21 @@ mod tests {
             assert_eq!(prefix, [b'x'; 100]);
             let second = iter.next_item().await.unwrap().unwrap();
             assert_eq!(second.into_buffered().await.unwrap().body(), b"hello");
-        });
+        }
         assert_eq!(reader.reader.seeks, 1);
     }
 
-    #[test]
-    fn seek_past_truncated_body_is_unexpected_eob() {
-        let mut data = warc(&[&large_body()]);
+    #[tokio::test]
+    async fn seek_past_truncated_body_is_unexpected_eob() {
+        let mut data = warc(&[&large_body()]).await;
         data.truncate(data.len() - SEEK_THRESHOLD as usize);
         let mut reader = WarcReader::new_seekable(CountingReader::new(data));
-        block_on(async {
-            let mut iter = reader.stream_records();
-            iter.next_item().await.unwrap().unwrap();
-            assert!(matches!(
-                iter.next_item().await,
-                Some(Err(Error::UnexpectedEOB))
-            ));
-        });
+        let mut iter = reader.stream_records();
+        iter.next_item().await.unwrap().unwrap();
+        assert!(matches!(
+            iter.next_item().await,
+            Some(Err(Error::UnexpectedEOB))
+        ));
     }
 
     #[cfg(feature = "storage")]
@@ -345,7 +338,7 @@ mod tests {
     async fn from_path_seeks_past_large_bodies() {
         let operator = Operator::new(Memory::default()).unwrap();
         operator
-            .write("a.warc", warc(&[&large_body(), b"hello"]))
+            .write("a.warc", warc(&[&large_body(), b"hello"]).await)
             .await
             .unwrap();
         let mut reader = WarcReader::from_path(&operator, "a.warc").await.unwrap();
@@ -360,7 +353,7 @@ mod tests {
     #[tokio::test]
     async fn from_path_truncated_body_is_unexpected_eob() {
         let operator = Operator::new(Memory::default()).unwrap();
-        let mut data = warc(&[&large_body()]);
+        let mut data = warc(&[&large_body()]).await;
         data.truncate(data.len() - SEEK_THRESHOLD as usize);
         operator.write("a.warc", data).await.unwrap();
         let mut reader = WarcReader::from_path(&operator, "a.warc").await.unwrap();

@@ -44,7 +44,6 @@ impl<R: AsyncBufRead + Unpin> AsyncRead for GzipReader<R> {
 mod tests {
     use super::GzipReader;
 
-    use futures_executor::block_on;
     use futures_util::io::{AsyncReadExt, BufReader, Cursor};
     use libflate::gzip::Encoder;
     use std::io::{ErrorKind, Write};
@@ -55,15 +54,15 @@ mod tests {
         encoder.finish().into_result().unwrap()
     }
 
-    fn read_in_small_chunks(compressed: &[u8]) -> std::io::Result<Vec<u8>> {
+    async fn read_in_small_chunks(compressed: &[u8]) -> std::io::Result<Vec<u8>> {
         let inner = BufReader::with_capacity(7, Cursor::new(compressed));
         let mut output = Vec::new();
-        block_on(GzipReader::new(inner).read_to_end(&mut output))?;
+        GzipReader::new(inner).read_to_end(&mut output).await?;
         Ok(output)
     }
 
-    #[test]
-    fn decodes_members_split_across_reads() {
+    #[tokio::test]
+    async fn decodes_members_split_across_reads() {
         let large: Vec<u8> = (0..300_000u32).map(|i| (i * 31 % 251) as u8).collect();
         let mut compressed = member(b"first");
         compressed.extend(member(&large));
@@ -73,13 +72,15 @@ mod tests {
         let mut expected = b"first".to_vec();
         expected.extend(&large);
         expected.extend(b"last");
-        assert_eq!(read_in_small_chunks(&compressed).unwrap(), expected);
+        assert_eq!(read_in_small_chunks(&compressed).await.unwrap(), expected);
     }
 
-    #[test]
-    fn truncated_member_is_an_error() {
+    #[tokio::test]
+    async fn truncated_member_is_an_error() {
         let compressed = member(b"hello");
-        let error = read_in_small_chunks(&compressed[..compressed.len() - 1]).unwrap_err();
+        let error = read_in_small_chunks(&compressed[..compressed.len() - 1])
+            .await
+            .unwrap_err();
         assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
     }
 }
