@@ -1,6 +1,6 @@
 [package]
 name = "warc-rs"
-version = "0.3.3"
+version = "0.3.4"
 description = "Async WARC reader/writer with OpenDAL storage (fork of the warc crate)."
 readme = "README.md"
 repository = "https://github.com/dentiny/warc-rs"
@@ -21,7 +21,7 @@ uuid = { version = "1.27.0", features = ["v4"] }
 
 [dependencies.opendal]
 optional = true
-version = "0.59.3"
+version = "0.59.5"
 default-features = false
 features = [
     "executors-tokio",
