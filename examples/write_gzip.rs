@@ -1,6 +1,6 @@
-use chrono::prelude::*;
 use warc_rs::opendal::services::Fs;
 use warc_rs::opendal::Operator;
+use chrono::prelude::*;
 
 use warc_rs::WarcHeader;
 use warc_rs::{BufferedBody, RawRecordHeader, Record, RecordType, WarcWriter};
